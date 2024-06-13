@@ -10,6 +10,8 @@ broker = '192.168.178.160'
 address = "84:72:93:94:B6:4C"
 port = 1883
 topic = "gardena/automower"
+topic_cmd = "gardena/automower/cmd"
+error_counter = 0
 # Generate a Client ID with the publish prefix.
 client_id = f'publish-{random.randint(0, 1000)}'
 # msg to be published on mqtt
@@ -28,89 +30,125 @@ def connect_mqtt():
     client.connect(broker, port)
     return client
 
-def publish(client, msg):
-    result = client.publish(topic,json.dumps(msg))
+def publish(client: mqtt_client, msg):
+    result = client.publish(topic,json.dumps(msg, indent = 4))
     status = result[0]
     if status == 0:
         print(f"Send `{msg}` to topic `{topic}`")
     else:
         print(f"Failed to send message to topic {topic}")
 
-async def connect(m: mower.Mower):
-    device = await BleakScanner.find_device_by_address(m.address)
+async def connect(m: mower.Mower, client: mqtt_client):
+    try:
+        print("Start test mower")
+        device = await BleakScanner.find_device_by_address(m.address)
+        if device is None:
+            print("Unable to connect to device address: " + m.address)
+            print(
+                "Please make sure the device address is correct, the device is powered on and nearby"
+            )
+            return
+        print(f"Device found. Start connecting to device {m.address}")
+        await m.connect(device)
+        print(f"Connected to device with address {m.address}")
+        print(f"Mower : {m}")
 
-    if device is None:
-        print("Unable to connect to device address: " + m.address)
-        print(
-            "Please make sure the device address is correct, the device is powered on and nearby"
-        )
-        return
+        model = await m.get_model()
+        print(f"Model : {model} ")
+        msg.update({"Model" : str(model)})
 
-    await m.connect(device)
-    print("connected ...")
-    manufacturer = await m.get_manufacturer()
-    msg.update({'manufacturer':manufacturer})
-    print("Mower manufacturer: " + manufacturer)
+        manufacturer = await m.get_manufacturer()
+        print(f"Manufacturer {manufacturer}")
+        msg.update({"Manufacturer":manufacturer})
+        
+        while True:
+            print("Start sending keep Alive")
+            keepalive_response = await m.send_keepalive()
+            if not keepalive_response:
+                logger.error(f"Error sending keepalive request {keepalive_response}")
 
-    model = await m.get_model()
-    msg.update({'model':model})
-    print("Mower model: " + model)
+            enterOperatorPinRequestResult = await m.send_operator_pin_request(m.pin)
+            print(
+                f"Enter Operator Pin Request Result {enterOperatorPinRequestResult}"
+            )
 
-    charging = await m.is_charging()
-    if charging:
-        msg.update({'isCharging':1})
-        print("Mower is charging")
-    else:
-        msg.update({'isCharging':0})
-        print("Mower is not charging")
+            success = await m.get_startupsequence_required_request()
+            print(f"Startupsequence is required response {success}")
 
-    battery_level = await m.battery_level()
-    msg.update({'batteryLevel':battery_level})
-    print("Battery is: " + str(battery_level) + "%")
+            operator_is_logged_in = await m.is_operator_loggedin()
+            print(f"Operator is logged in {operator_is_logged_in}")
 
-    state = await m.mower_state()
-    if state is not None:
-        msg.update({'state':state.name})
-        print("Mower state: " + state.name)
+            activity = await m.mower_activity()
+            print(f"Mower activity : {activity}")
+            msg.update({"MowerActivity" : str(activity)})
 
-    activity = await m.mower_activity()
-    if activity is not None:
-        msg.update({'activity':activity.name})
-        print("Mower activity: " + activity.name)
+            mode = await m.get_mode_of_operation()
+            print(f"Mower mode : {mode}")
+            msg.update({"MowerMode": str(mode)})
 
-    next_start_time = await m.mower_next_start_time()
-    if next_start_time:
-        msg.update({'nextStartTime':next_start_time.strftime("%Y-%m-%d %H:%M:%S")})
-        print("Next start time: " + next_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    else:
-        print("No next start time")
+            serial_number = await m.get_serial_number()
+            print(f"Serial number : {serial_number}")
+            msg.update({"SerialNumber": serial_number})
 
-    statuses = await m.command("GetAllStatistics")
-    for status, value in statuses.items():
-        msg.update({str(status):value})
-        print(status, value)
+            is_charging = await m.is_charging()
+            print(f"Is charging {is_charging}")
+            msg.update({"IsCharging":is_charging})
 
-    serial_number = await m.command("GetSerialNumber")
-    msg.update({'serialNumber':str(serial_number)})
-    print("Serial number: " + str(serial_number))
+            print("Start sending keep Alive")
+            keepalive_response = await m.send_keepalive()
+            if not keepalive_response:
+                logger.error(f"Error sending keepalive request {keepalive_response}")
 
-    mower_name = await m.command("GetUserMowerNameAsAsciiString")
-    msg.update({'name':mower_name})
-    print("Mower name: " + mower_name)
-    await m.disconnect()
+            battery_level = await m.battery_level()
+            print(f"Battery level {battery_level}")
+            msg.update({"BatteryLevel":battery_level})
+
+            restriction_reason = await m.get_restriction_reason()
+            print(f"Restriction Reason : {restriction_reason}")
+            msg.update({"RestrictionReason" : str(restriction_reason)})
+
+            next_start_time = await m.mower_next_start_time()
+            if next_start_time:
+                print(
+                    "Next start time: " + next_start_time.strftime("%Y-%m-%d %H:%M:%S")
+                )
+                msg.update({"Next start time":  next_start_time.strftime("%Y-%m-%d %H:%M:%S")})
+            else:
+                print("No next start time")
+
+            number_of_tasks = await m.get_number_of_tasks()
+            print(f"number of tasks : {number_of_tasks}")
+            msg.update({"NoOfTasks" : number_of_tasks})
+
+            keepalive_response = await m.send_keepalive()
+
+            mower_state = await m.mower_state()
+            print(f"Mower state response {mower_state}")
+            msg.update({"MowerStateResponse":str(mower_state)})
+
+            mower_activity = await m.mower_activity()
+            print(f"MowerActivity : {mower_activity}")
+
+            get_mode_response = await m.get_mode_of_operation()
+            print(f"Mode : {get_mode_response}")
+            keepalive_response = await m.send_keepalive()
+            print('publish')
+            publish(client,msg)
+            time.sleep(60) #sleep for 15 minute and than try to retrieve data again
+    except Exception as e:
+        print("There was an issue communicating with the device")
+        raise e
 
 if __name__ == "__main__":
     client = connect_mqtt()
     client.loop_start()
-    while True:
-        try:
-            m = mower.Mower(1197489078, address,1432)
-            asyncio.run(connect(m))
-            print('publish')
-            publish(client,msg)
-        except Exception as e:
-            print(e)
-            msg.update({"Error":str(e)})
-            publish(client,msg)
-        time.sleep(60*5) #sleep for 5 minutes and than try to retrieve data again
+    try:
+        m = mower.Mower(random.randint(100000000, 999999999), address,1432)
+        asyncio.run(connect(m,client))
+    except Exception as e:
+        error_counter += 1
+        print(e)
+        msg.update({"Error":str(e)})
+        msg.update({"Error Counter":error_counter})
+        publish(client,msg)
     client.loop_stop()
