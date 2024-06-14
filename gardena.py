@@ -5,12 +5,14 @@ import random
 import time
 import json
 from paho.mqtt import client as mqtt_client
+import GardenaCfg
 
-broker = '192.168.178.160'
-address = "84:72:93:94:B6:4C"
-port = 1883
-topic = "gardena/automower"
-topic_cmd = "gardena/automower/cmd"
+#todo add this as config file
+broker = None
+address = None
+port = None
+topic = None
+topic_cmd = None
 error_counter = 0
 # Generate a Client ID with the publish prefix.
 client_id = f'publish-{random.randint(0, 1000)}'
@@ -90,6 +92,11 @@ async def connect(m: mower.Mower, client: mqtt_client):
             print(f"Serial number : {serial_number}")
             msg.update({"SerialNumber": serial_number})
 
+            statuses = await mower.command("GetAllStatistics")
+            for status, value in statuses.items():
+                print(status, value)
+                msg.update({str(status):value})
+
             is_charging = await m.is_charging()
             print(f"Is charging {is_charging}")
             msg.update({"IsCharging":is_charging})
@@ -134,12 +141,20 @@ async def connect(m: mower.Mower, client: mqtt_client):
             keepalive_response = await m.send_keepalive()
             print('publish')
             publish(client,msg)
-            time.sleep(60) #sleep for 15 minute and than try to retrieve data again
+            time.sleep(60) #sleep for 1 minute and than try to retrieve data again
     except Exception as e:
         print("There was an issue communicating with the device")
         raise e
 
 if __name__ == "__main__":
+    cfg_parser = GardenaCfg()
+    result = cfg_parser.parse()
+    broker = result["mqtt"]["broker"]
+    port = int(result["mqtt"]["port"])
+    topic = result["mqtt"]["topic"]
+    topic_cmd = result["mqtt"]["topic_cmd"]
+    address = result["mower"]["address"]
+    
     client = connect_mqtt()
     client.loop_start()
     try:
