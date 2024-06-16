@@ -5,13 +5,13 @@ import random
 import time
 import json
 from paho.mqtt import client as mqtt_client
-import GardenaCfg
+from GardenaCfg import GardenaCfg
 
-broker = None
-address = None
-port = None
-topic = None
-topic_cmd = None
+global broker
+global address
+global port 
+global topic
+global topic_cmd
 error_counter = 0
 # Generate a Client ID with the publish prefix.
 client_id = f'publish-{random.randint(0, 1000)}'
@@ -91,10 +91,10 @@ async def connect(m: mower.Mower, client: mqtt_client):
             print(f"Serial number : {serial_number}")
             msg.update({"SerialNumber": serial_number})
 
-            statuses = await mower.command("GetAllStatistics")
-            for status, value in statuses.items():
-                print(status, value)
-                msg.update({str(status):value})
+            #statuses = await m.command("GetAllStatistics")
+            #for status, value in statuses.items():
+             #   print(status, value)
+              #  msg.update({str(status):value})
 
             is_charging = await m.is_charging()
             print(f"Is charging {is_charging}")
@@ -153,11 +153,11 @@ if __name__ == "__main__":
     topic = result["mqtt"]["topic"]
     topic_cmd = result["mqtt"]["topic_cmd"]
     address = result["mower"]["address"]
-
+    pin = result["mower"]["pin"]
     client = connect_mqtt()
     client.loop_start()
     try:
-        m = mower.Mower(random.randint(100000000, 999999999), address,1432)
+        m = mower.Mower(random.randint(100000000, 999999999), address,int(pin))
         asyncio.run(connect(m,client))
     except Exception as e:
         error_counter += 1
