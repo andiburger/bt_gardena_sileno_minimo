@@ -1,2 +1,6 @@
 *.out
 pwd.txt
+*.pyc
+__pycache__/
+__pycache__/GardenaCfg.cpython-311.pyc
+__pycache__/GardenaCfg.cpython-311.pyc

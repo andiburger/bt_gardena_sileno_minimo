@@ -1,0 +1,13 @@
+[Unit]
+Description=Gardena BLE2MQTT Service
+After=multi-user.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/dev/gardena_sileno_min/
+User=pi
+Restart=always
+ExecStart=/usr/bin/python3 /home/pi/dev/gardena_sileno_min/gardena.py
+
+[Install]
+WantedBy=multi-user.target

@@ -39,6 +39,12 @@ def publish(client: mqtt_client, msg):
     else:
         print(f"Failed to send message to topic {topic}")
 
+def sleep(sleep_time:int):
+    for i in range(sleep_time):
+        time.sleep(1)
+        #TODO check if new command available
+    return True
+
 async def connect(m: mower.Mower, client: mqtt_client):
     try:
         print("Start test mower")
@@ -91,10 +97,10 @@ async def connect(m: mower.Mower, client: mqtt_client):
             print(f"Serial number : {serial_number}")
             msg.update({"SerialNumber": serial_number})
 
-            #statuses = await m.command("GetAllStatistics")
-            #for status, value in statuses.items():
-             #   print(status, value)
-              #  msg.update({str(status):value})
+            statuses = await m.get_parameter("getStatuses")
+            for status, value in statuses.items():
+                print(status, value)
+                msg.update({str(status):value})
 
             is_charging = await m.is_charging()
             print(f"Is charging {is_charging}")
@@ -118,7 +124,7 @@ async def connect(m: mower.Mower, client: mqtt_client):
                 print(
                     "Next start time: " + next_start_time.strftime("%Y-%m-%d %H:%M:%S")
                 )
-                msg.update({"Next start time":  next_start_time.strftime("%Y-%m-%d %H:%M:%S")})
+                msg.update({"NextStartTime":  next_start_time.strftime("%Y-%m-%d %H:%M:%S")})
             else:
                 print("No next start time")
 
