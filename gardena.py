@@ -12,6 +12,7 @@ global address
 global port 
 global topic
 global topic_cmd
+global sleep_interval
 error_counter = 0
 # Generate a Client ID with the publish prefix.
 client_id = f'publish-{random.randint(0, 1000)}'
@@ -45,6 +46,64 @@ def sleep(sleep_time:int):
         #TODO check if new command available
     return True
 
+async def exec_cmd(client, userdata, msg)
+    userdata = m
+    cmd = msg.payload.decode()["cmd"]
+    if (cmd == 'start') or (cmd == "start_mowing"):
+        # actually start mowing for 30 minutes
+        print("--------------")
+        print("start setting mode to manual")
+        await m.set_mode_of_operation(ModeOfOperation.MANUAL)
+        print("Mode of operation set to manual")
+        print("--------------")
+
+        print("Overriding mow to 30 mins")
+        await m.set_mower_override_duration_in_seconds(
+            30 * 60
+        )  # 30 minutes override mow
+        print("override mow finished ")
+        print("--------------")
+
+        start_trigger = await m.start_trigger_request()
+        print(f"Start trigger response : {start_trigger}")
+
+    elif (cmd == 'stop') or (cmd == 'park'):
+        print("Must stop mowing. Send Park command to mower")
+        await m.set_mode_of_operation(ModeOfOperation.MANUAL)
+        print(
+            "Finished setting mode of operation to manual. Sending park command"
+        )
+        await m.mower_park()
+        print("Finished sending park command")
+        start_trigger = await m.start_trigger_request()
+        print(f"Start trigger response : {start_trigger}")
+
+    elif (cmd == 'pause'):
+        print("Must stop mowing. Send pause command to mower")
+        await m.set_mode_of_operation(ModeOfOperation.MANUAL)
+        print(
+            "Finished setting mode of operation to manual. Sending pause command"
+        )
+        await m.mower_pause()
+        print("Finished sending pause command")
+        start_trigger = await m.start_trigger_request()
+        print(f"Start trigger response : {start_trigger}")
+
+    elif (cmd == 'resume'):
+        print("Must stop mowing. Send resume command to mower")
+        await m.set_mode_of_operation(ModeOfOperation.MANUAL)
+        print(
+            "Finished setting mode of operation to manual. Sending resume command"
+        )
+        await m.mower_resume()
+        print("Finished sending resume command")
+        start_trigger = await m.start_trigger_request()
+        print(f"Start trigger response : {start_trigger}")
+
+def subscribe(client: mqtt_client):
+    client.subscribe(topic_cmd)
+    client.on_message = exec_cmd
+
 async def connect(m: mower.Mower, client: mqtt_client):
     try:
         print("Start test mower")
@@ -59,7 +118,9 @@ async def connect(m: mower.Mower, client: mqtt_client):
         await m.connect(device)
         print(f"Connected to device with address {m.address}")
         print(f"Mower : {m}")
-
+        client.user_data_set(m)
+        subscribe(client)
+        
         model = await m.get_model()
         print(f"Model : {model} ")
         msg.update({"Model" : str(model)})
@@ -146,7 +207,7 @@ async def connect(m: mower.Mower, client: mqtt_client):
             keepalive_response = await m.send_keepalive()
             print('publish')
             publish(client,msg)
-            time.sleep(60) #sleep for 1 minute and than try to retrieve data again
+            time.sleep(sleep_interval*60) 
     except Exception as e:
         print("There was an issue communicating with the device")
         raise e
@@ -160,6 +221,7 @@ if __name__ == "__main__":
     topic_cmd = result["mqtt"]["topic_cmd"]
     address = result["mower"]["address"]
     pin = result["mower"]["pin"]
+    sleep_interval = result["mower"]["sleep_interval"]
     client = connect_mqtt()
     client.loop_start()
     try:
