@@ -1,1 +1,1 @@
-# bt_gard
+# BLE to MQTT Gateway for Gardena BT Mower
