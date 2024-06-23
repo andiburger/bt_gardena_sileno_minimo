@@ -46,7 +46,7 @@ def sleep(sleep_time:int):
         #TODO check if new command available
     return True
 
-async def exec_cmd(client, userdata, msg)
+async def exec_cmd(client, userdata, msg):
     userdata = m
     cmd = msg.payload.decode()["cmd"]
     if (cmd == 'start') or (cmd == "start_mowing"):
@@ -100,9 +100,9 @@ async def exec_cmd(client, userdata, msg)
         start_trigger = await m.start_trigger_request()
         print(f"Start trigger response : {start_trigger}")
 
-def subscribe(client: mqtt_client):
+async def subscribe(client: mqtt_client):
     client.subscribe(topic_cmd)
-    client.on_message = exec_cmd
+    client.on_message = await exec_cmd
 
 async def connect(m: mower.Mower, client: mqtt_client):
     try:
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     topic_cmd = result["mqtt"]["topic_cmd"]
     address = result["mower"]["address"]
     pin = result["mower"]["pin"]
-    sleep_interval = result["mower"]["sleep_interval"]
+    sleep_interval = int(result["mower"]["sleep_interval"])
     client = connect_mqtt()
     client.loop_start()
     try:
