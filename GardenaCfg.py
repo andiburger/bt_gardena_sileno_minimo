@@ -30,7 +30,7 @@ class GardenaCfg():
     def parse(self):
         self.config.read('cfg.ini')
         result = {"mower":{},"mqtt":{}}
-        result["mower"].update({"address":self.config["mower"]["address"], "pin":self.config["mower"]["pin"]})
+        result["mower"].update({"address":self.config["mower"]["address"], "pin":self.config["mower"]["pin"], "sleep_interval":self.config["mower"]["sleep_interval"]})
         result["mqtt"].update({"broker":self.config["mqtt"]["broker"], "port":self.config["mqtt"]["port"], "topic":self.config["mqtt"]["topic"], "topic_cmd":self.config["mqtt"]["topic_cmd"]})
         return result
 

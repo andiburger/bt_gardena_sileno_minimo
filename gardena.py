@@ -4,7 +4,7 @@ import asyncio
 import random
 import time
 import json
-from paho.mqtt import client as mqtt_client
+from asyncio_paho import AsyncioPahoClient
 from GardenaCfg import GardenaCfg
 
 global broker
@@ -19,21 +19,23 @@ client_id = f'publish-{random.randint(0, 1000)}'
 # msg to be published on mqtt
 msg = {}
 
-def connect_mqtt():
-    def on_connect(client, userdata, flags, rc):
+async def connect_mqtt():
+    """def on_connect(client, userdata, flags, rc):
         if rc == 0:
             print("Connected to MQTT Broker!")
         else:
-            print("Failed to connect, return code %d\n", rc)
-    client = mqtt_client.Client(client_id)
+            print("Failed to connect, return code %d\n", rc)"""
+    client = AsyncioPahoClient()
+    #client = mqtt_client.Client(client_id)
 
     # client.username_pw_set(username, password)
-    client.on_connect = on_connect
-    client.connect(broker, port)
+    #client.on_connect = on_connect
+    await client.asyncio_connect(broker, port)
+    #client.connect(broker, port)
     return client
 
-def publish(client: mqtt_client, msg):
-    result = client.publish(topic,json.dumps(msg, indent = 4))
+async def publish(client: mqtt_client, msg):
+    await result = client.asyncio_publish(topic,json.dumps(msg, indent = 4))
     status = result[0]
     if status == 0:
         print(f"Send `{msg}` to topic `{topic}`")
@@ -101,8 +103,8 @@ async def exec_cmd(client, userdata, msg):
         print(f"Start trigger response : {start_trigger}")
 
 async def subscribe(client: mqtt_client):
-    client.subscribe(topic_cmd)
-    client.on_message = await exec_cmd
+    await client.asyncio_subscribe(topic_cmd)
+    client.asyncio_listeners.add_on_message(exec_cmd)
 
 async def connect(m: mower.Mower, client: mqtt_client):
     try:
@@ -119,7 +121,7 @@ async def connect(m: mower.Mower, client: mqtt_client):
         print(f"Connected to device with address {m.address}")
         print(f"Mower : {m}")
         client.user_data_set(m)
-        subscribe(client)
+        await subscribe(client)
         
         model = await m.get_model()
         print(f"Model : {model} ")
@@ -206,7 +208,7 @@ async def connect(m: mower.Mower, client: mqtt_client):
             print(f"Mode : {get_mode_response}")
             keepalive_response = await m.send_keepalive()
             print('publish')
-            publish(client,msg)
+            await publish(client,msg)
             time.sleep(sleep_interval*60) 
     except Exception as e:
         print("There was an issue communicating with the device")
