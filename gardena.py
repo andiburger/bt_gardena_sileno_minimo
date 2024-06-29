@@ -224,8 +224,8 @@ if __name__ == "__main__":
     address = result["mower"]["address"]
     pin = result["mower"]["pin"]
     sleep_interval = int(result["mower"]["sleep_interval"])
-    client = connect_mqtt()
-    client.loop_start()
+    await client = connect_mqtt()
+    #client.loop_start()
     try:
         m = mower.Mower(random.randint(100000000, 999999999), address,int(pin))
         asyncio.run(connect(m,client))
@@ -234,5 +234,5 @@ if __name__ == "__main__":
         print(e)
         msg.update({"Error":str(e)})
         msg.update({"Error Counter":error_counter})
-        publish(client,msg)
-    client.loop_stop()
+        await publish(client,msg)
+    client.Disconnect()
