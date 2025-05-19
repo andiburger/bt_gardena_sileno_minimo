@@ -1,3 +1,4 @@
-bleak
 automower_ble
-paho.mqtt
+bleak
+paho-mqtt
+asyncio
