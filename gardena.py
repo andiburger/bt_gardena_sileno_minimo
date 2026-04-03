@@ -60,6 +60,200 @@ def publish(client: mqtt_client.Client, msg):
     else:
         logger.error(f"Failed to send message to topic {topic}")
 
+def publish_discovery(client: mqtt_client.Client, serial_number, model, manufacturer, state_topic, cmd_topic):
+    # Das fasst alle Sensoren zu EINEM Gerät in Home Assistant zusammen
+    device_info = {
+        "identifiers": [f"gardena_{serial_number}"],
+        "name": "Sileno Minimo",
+        "manufacturer": manufacturer,
+        "model": model
+    }
+
+    # list of all values to be published for Home Assistant Auto-Discovery
+    discovery_messages = [
+        # 1. the lawn mower entity itself, which can be used to show the current activity and send commands to the mower
+        (
+            "lawn_mower/gardena_minimo/mower/config",
+            {
+                "name": "Sileno Minimo",
+                "unique_id": f"gardena_mower_{serial_number}",
+                "activity_state_topic": state_topic,
+                "activity_value_template": "{% if value_json.MowerActivity in ['2', '3', '4'] %} mowing {% elif value_json.MowerActivity == '5' %} docked {% elif value_json.MowerActivity == '7' %} error {% else %} paused {% endif %}",
+                "start_mowing_command_topic": cmd_topic,
+                "start_mowing_command_template": "START",
+                "pause_command_topic": cmd_topic,
+                "pause_command_template": "PAUSE",
+                "dock_command_topic": cmd_topic,
+                "dock_command_template": "PARK",
+                "device": device_info
+            }
+        ),
+        # 2. detailed status sensor, which shows the raw activity code as well as a human readable status (e.g. mowing, searching, etc.)
+        (
+            "sensor/gardena_minimo/detailstatus/config",
+            {
+                "name": "Detailstatus",
+                "unique_id": f"g_status_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
+                "icon": "mdi:information-outline",
+                "device": device_info
+            }
+        ),
+        # 3. battery level sensor
+        (
+            "sensor/gardena_minimo/battery/config",
+            {
+                "name": "Akkustand",
+                "unique_id": f"g_bat_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json.BatteryLevel | int }}",
+                "device_class": "battery",
+                "unit_of_measurement": "%",
+                "device": device_info
+            }
+        ),
+        # 4. charging status sensor
+        (
+            "binary_sensor/gardena_minimo/is_charging/config",
+            {
+                "name": "Ladestatus",
+                "unique_id": f"g_charging_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json.IsCharging }}",
+                "payload_on": "True",
+                "payload_off": "False",
+                "device_class": "battery_charging",
+                "device": device_info
+            }
+        ),
+        # 5. next start sensor
+        (
+            "sensor/gardena_minimo/next_start/config",
+            {
+                "name": "Nächster Start",
+                "unique_id": f"g_nextstart_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json['Next start time'] }}",
+                "icon": "mdi:calendar-clock",
+                "device": device_info
+            }
+        ),
+        # 6. blade usage sensor
+        (
+            "sensor/gardena_minimo/blade_usage/config",
+            {
+                "name": "Messerlaufzeit",
+                "unique_id": f"g_blade_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ (value_json.cuttingBladeUsageTime / 3600) | round(2) }}",
+                "unit_of_measurement": "h",
+                "state_class": "total_increasing",
+                "icon": "mdi:saw-blade",
+                "device": device_info
+            }
+        ),
+        # 7. total running time sensor
+        (
+            "sensor/gardena_minimo/total_running/config",
+            {
+                "name": "Gesamte Betriebszeit",
+                "unique_id": f"g_running_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ (value_json.totalRunningTime / 3600) | round(2) }}",
+                "unit_of_measurement": "h",
+                "state_class": "total_increasing",
+                "icon": "mdi:clock-outline",
+                "device": device_info
+            }
+        ),
+        # 8. pure mowing time sensor
+        (
+            "sensor/gardena_minimo/total_cutting/config",
+            {
+                "name": "Reine Mähzeit",
+                "unique_id": f"g_cutting_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ (value_json.totalCuttingTime / 3600) | round(2) }}",
+                "unit_of_measurement": "h",
+                "state_class": "total_increasing",
+                "icon": "mdi:grass",
+                "device": device_info
+            }
+        ),
+        # 9. searching time sensor
+        (
+            "sensor/gardena_minimo/total_searching/config",
+            {
+                "name": "Suchzeit",
+                "unique_id": f"g_searching_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ (value_json.totalSearchingTime / 3600) | round(2) }}",
+                "unit_of_measurement": "h",
+                "state_class": "total_increasing",
+                "icon": "mdi:radar",
+                "device": device_info
+            }
+        ),
+        # 10. total charging time sensor
+        (
+            "sensor/gardena_minimo/total_charging/config",
+            {
+                "name": "Gesamte Ladezeit",
+                "unique_id": f"g_totalcharge_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ (value_json.totalChargingTime / 3600) | round(2) }}",
+                "unit_of_measurement": "h",
+                "state_class": "total_increasing",
+                "icon": "mdi:battery-clock",
+                "device": device_info
+            }
+        ),
+        # 11. charge cycles sensor
+        (
+            "sensor/gardena_minimo/charge_cycles/config",
+            {
+                "name": "Ladezyklen",
+                "unique_id": f"g_cycles_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json.numberOfChargingCycles | int }}",
+                "state_class": "total_increasing",
+                "icon": "mdi:battery-sync",
+                "device": device_info
+            }
+        ),
+        # 12. collisions sensor
+        (
+            "sensor/gardena_minimo/collisions/config",
+            {
+                "name": "Kollisionen",
+                "unique_id": f"g_collisions_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json.numberOfCollisions | int }}",
+                "state_class": "total_increasing",
+                "icon": "mdi:car-bumper",
+                "device": device_info
+            }
+        ),
+        # 13. gardena activity raw sensor, which shows the raw activity code without any interpretation, can be used for debugging or to create custom automations based on the raw activity code
+        (
+            "sensor/gardena_minimo/activity_raw/config",
+            {
+                "name": "Activity Raw",
+                "unique_id": f"g_act_raw_{serial_number}",
+                "state_topic": state_topic,
+                "value_template": "{{ value_json.MowerActivity | replace('MowerActivity.', '') }}",
+                "icon": "mdi:code-json",
+                "device": device_info
+            }
+        )
+    ]
+
+    for topic_suffix, payload in discovery_messages:
+        full_topic = f"homeassistant/{topic_suffix}"
+        client.publish(full_topic, json.dumps(payload), retain=True)
+        
+    logger.info("Auto-Discovery Setup erfolgreich an Home Assistant gesendet!")
 
 async def process_command(payload):
     logger.info(f"execute command: {payload}")
@@ -102,16 +296,18 @@ async def connect(m: mower.Mower, client: mqtt_client.Client):
         manufacturer = await m.get_manufacturer()
         logger.info(f"Manufacturer {manufacturer}")
         msg.update({"Manufacturer": manufacturer})
+        
+        serial_number = await m.command("GetSerialNumber")
+        logger.info(f"Serial number : {serial_number}")
+        msg.update({"SerialNumber": serial_number})
+
+        publish_discovery(client, serial_number, str(model), manufacturer, topic, topic_cmd)
         while True:
             logger.info("Start sending keep Alive")
 
             activity = await m.mower_activity()
             logger.info(f"Mower activity : {activity}")
             msg.update({"MowerActivity": str(activity)})
-
-            serial_number = await m.command("GetSerialNumber")
-            logger.info(f"Serial number : {serial_number}")
-            msg.update({"SerialNumber": serial_number})
 
             statuses = await m.command("GetAllStatistics")
             if isinstance(statuses, dict):
