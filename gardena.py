@@ -23,14 +23,12 @@ client_id = f'publish-{random.randint(0, 1000)}'
 msg = {}
 
 def connect_mqtt():
-    def on_connect(client, userdata, flags, rc):
-        if rc == 0:
+    def on_connect(client, userdata, flags, reason_code, properties):
+        if reason_code == 0:
             logger.info("Connected to MQTT Broker!")
         else:
-            logger.error(f"Failed to connect, return code {rc}")
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1, client_id=client_id)
-
-    # client.username_pw_set(username, password)
+            logger.error(f"Failed to connect, return code {reason_code}")
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id=client_id)
     client.on_connect = on_connect
     if broker is None or port is None:
         raise ValueError("MQTT broker address and port must be set before connecting.")
