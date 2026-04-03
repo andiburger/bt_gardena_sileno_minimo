@@ -127,7 +127,7 @@ if __name__ == "__main__":
     topic = result["mqtt"]["topic"]
     topic_cmd = result["mqtt"]["topic_cmd"]
     address = result["mower"]["address"]
-    pin = result["mower"]["pin"]
+    pin = int(result["mower"]["pin"])
 
     client = connect_mqtt()
     client.loop_start()
