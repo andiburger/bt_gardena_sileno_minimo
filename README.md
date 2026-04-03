@@ -63,6 +63,54 @@ The script connects to the mower, regularly reads status data (battery level, ac
 }
 ```
 
+## Pairing issues
+
+### Troubleshooting: `[org.bluez.Error.AuthenticationFailed]` on Linux (Raspberry Pi)
+
+When running this script on a Linux environment (like a Raspberry Pi), you might encounter the following error during the first connection attempt:
+`[org.bluez.Error.AuthenticationFailed] Authentication Failed`
+
+**Why does this happen?**
+The `automower-ble` library handles the PIN authentication internally via GATT characteristics. However, the Linux Bluetooth stack (BlueZ) intercepts the initial pairing request and blocks it because it expects an OS-level confirmation (a default agent), which the Python script cannot provide. 
+
+**The Workaround (One-Time Setup)**
+We need to temporarily start a background agent that automatically accepts the OS-level pairing request. You will need two SSH/Terminal windows for this.
+
+**Step 1: Clear the Bluetooth cache (Optional but recommended)**
+If you already tried connecting and failed, tell Linux to forget the mower first:
+```bash
+sudo bluetoothctl remove <YOUR_MOWER_MAC_ADDRESS>
+```
+
+**Step 2: Start the Auto-Accept Agent (Terminal 1)**
+Open your first terminal and start the Bluetooth control tool:
+
+```bash
+sudo bluetoothctl
+```
+Inside the [bluetooth]# prompt, type the following commands:
+
+```bash
+power on
+agent NoInputNoOutput
+default-agent
+```
+Important: Leave this terminal window open! This agent is now running in the background and will automatically say "Yes" to any OS-level connection requests.
+
+**Step 3: Prepare the Mower**
+
+Turn off Bluetooth on your smartphone to prevent the Gardena App from interfering.
+
+Turn your mower OFF, wait 5 seconds, and turn it ON again.
+
+The mower is now in pairing mode for exactly 3 minutes.
+
+**Step 4: Start the Script (Terminal 2)**
+Open a second terminal window, activate your virtual environment, and run the script:
+
+```bash
+python gardena.py
+```
 ## 🛠 Notes
 
 - You can adjust the logging level in `gardena.py`.
