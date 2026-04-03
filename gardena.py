@@ -8,7 +8,7 @@ from paho.mqtt import client as mqtt_client
 from cfg_parser import GardenaCfg
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 loop = None  # Global variable to hold the event loop, if needed for future use
 broker = None
