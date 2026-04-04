@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 loop = None  # Global variable to hold the event loop, if needed for future use
 broker = None
 address = None
+m = None
 port = None
 topic = None
 topic_cmd = None
