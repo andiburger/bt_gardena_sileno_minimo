@@ -256,17 +256,25 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
     logger.info("Auto-Discovery Setup erfolgreich an Home Assistant gesendet!")
 
 async def process_command(payload):
-    logger.info(f"execute command: {payload}")
+    logger.info(f"Executing command: {payload}")
     try:
-        # Depending on the command, call the appropriate method on the mower instance
         if payload == "START":
-            await m.command("Start")  # starts or resumes mowing on the lawn
+            # Forces the mower to start immediately by overriding the schedule.
+            # Uses the built-in library function which sets Mode to AUTO,
+            # defines the duration (default 3h), and sends the StartTrigger.
+            logger.info("Sending Override (Immediate start for 3 hours)...")
+            await m.mower_override()
         elif payload == "PAUSE":
-            await m.command("Pause")  # pauses mowing on the lawn
+            # Immediately pauses the mower at its current location.
+            logger.info("Sending Pause command...")
+            await m.command("Pause")
         elif payload == "PARK":
-            await m.command("Park")  # drives back to the charging station
+            # Sends the mower back to the charging station.
+            # It will stay there until the next scheduled task begins.
+            logger.info("Sending Park command (Until next schedule)...")
+            await m.command("ParkUntilNextSchedule")
         else:
-            logger.warning(f"Unknown command: {payload}")
+            logger.warning(f"Unknown command received: {payload}")
     except Exception as e:
         logger.error(f"Error occurred while sending command {payload}: {e}")
 
