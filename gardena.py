@@ -1,8 +1,7 @@
-from automower_ble import protocol, mower
+from automower_ble import mower
 from bleak import BleakScanner
 import asyncio
 import random
-import time
 import json
 from paho.mqtt import client as mqtt_client
 from cfg_parser import GardenaCfg
@@ -24,7 +23,20 @@ msg = {}
 
 
 def connect_mqtt():
+    """
+    Connects to the MQTT broker and sets up callbacks for connection and message handling.
+    The on_connect callback subscribes to the command topic upon successful connection.
+    The on_message callback processes incoming commands and executes them in the event loop to avoid blocking.
+    """
+
     def on_connect(client, userdata, flags, reason_code, properties):
+        """Callback function for MQTT connection. Subscribes to command topic on successful connection.
+        Args:
+            client: The MQTT client instance.
+            userdata: User-defined data passed to the callback.
+            flags: Response flags sent by the broker.
+            reason_code: The MQTT connection result code.
+            properties: MQTT v5.0 properties (not used here)."""
         if reason_code == 0:
             logger.info("Connected to MQTT Broker!")
             # subscribe to command topic after successful connection
@@ -36,13 +48,20 @@ def connect_mqtt():
 
     # supports MQTT v5.0 for better callback handling
     def on_message(client, userdata, msg):
-        payload = msg.payload.decode('utf-8')
+        """Callback function for incoming MQTT messages. Decodes the payload and processes commands in the event loop.
+        Args:
+            client: The MQTT client instance.
+            userdata: User-defined data passed to the callback.
+            msg: The MQTT message instance containing topic and payload."""
+        payload = msg.payload.decode("utf-8")
         logger.info(f"MQTT Command empfangen: {payload}")
         if loop and m:
             # execute the command in the event loop to avoid blocking the MQTT thread
             asyncio.run_coroutine_threadsafe(process_command(payload), loop)
 
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id=client_id)
+    client = mqtt_client.Client(
+        mqtt_client.CallbackAPIVersion.VERSION2, client_id=client_id
+    )
     client.on_connect = on_connect
     client.on_message = on_message
     if broker is None or port is None:
@@ -50,7 +69,15 @@ def connect_mqtt():
     client.connect(broker, port)
     return client
 
+
 def publish(client: mqtt_client.Client, msg):
+    """Publishes a message to the MQTT topic. The message is converted to JSON format before publishing.
+    Args:
+        client: The MQTT client instance.
+        msg: The message to be published.
+    Raises:
+        ValueError: If the MQTT topic is not set before publishing.
+    """
     if topic is None:
         raise ValueError("MQTT topic must be set before publishing.")
     result = client.publish(topic, json.dumps(msg, indent=4))
@@ -60,13 +87,27 @@ def publish(client: mqtt_client.Client, msg):
     else:
         logger.error(f"Failed to send message to topic {topic}")
 
-def publish_discovery(client: mqtt_client.Client, serial_number, model, manufacturer, state_topic, cmd_topic):
-    # Das fasst alle Sensoren zu EINEM Gerät in Home Assistant zusammen
+
+def publish_discovery(
+    client: mqtt_client.Client,
+    serial_number,
+    model,
+    manufacturer,
+    state_topic,
+    cmd_topic,
+):
+    """Publishes Home Assistant Auto-Discovery configuration messages for the Gardena mower. This allows Home Assistant to automatically detect and integrate the mower with multiple sensors and a lawn mower entity.
+    Args:
+        client: The MQTT client instance.
+        serial_number: The serial number of the mower.
+        model: The model of the mower.
+        manufacturer: The manufacturer of the mower.
+    """
     device_info = {
         "identifiers": [f"gardena_{serial_number}"],
         "name": "Sileno Minimo",
         "manufacturer": manufacturer,
-        "model": model
+        "model": model,
     }
 
     # list of all values to be published for Home Assistant Auto-Discovery
@@ -85,8 +126,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "pause_command_template": "PAUSE",
                 "dock_command_topic": cmd_topic,
                 "dock_command_template": "PARK",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 2. detailed status sensor, which shows the raw activity code as well as a human readable status (e.g. mowing, searching, etc.)
         (
@@ -97,8 +138,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "state_topic": state_topic,
                 "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
                 "icon": "mdi:information-outline",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 3. battery level sensor
         (
@@ -110,8 +151,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "value_template": "{{ value_json.BatteryLevel | int }}",
                 "device_class": "battery",
                 "unit_of_measurement": "%",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 4. charging status sensor
         (
@@ -124,8 +165,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "payload_on": "True",
                 "payload_off": "False",
                 "device_class": "battery_charging",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 5. next start sensor
         (
@@ -136,8 +177,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "state_topic": state_topic,
                 "value_template": "{{ value_json['Next start time'] }}",
                 "icon": "mdi:calendar-clock",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 6. blade usage sensor
         (
@@ -150,8 +191,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "unit_of_measurement": "h",
                 "state_class": "total_increasing",
                 "icon": "mdi:saw-blade",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 7. total running time sensor
         (
@@ -164,8 +205,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "unit_of_measurement": "h",
                 "state_class": "total_increasing",
                 "icon": "mdi:clock-outline",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 8. pure mowing time sensor
         (
@@ -178,8 +219,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "unit_of_measurement": "h",
                 "state_class": "total_increasing",
                 "icon": "mdi:grass",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 9. searching time sensor
         (
@@ -192,8 +233,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "unit_of_measurement": "h",
                 "state_class": "total_increasing",
                 "icon": "mdi:radar",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 10. total charging time sensor
         (
@@ -206,8 +247,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "unit_of_measurement": "h",
                 "state_class": "total_increasing",
                 "icon": "mdi:battery-clock",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 11. charge cycles sensor
         (
@@ -219,8 +260,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "value_template": "{{ value_json.numberOfChargingCycles | int }}",
                 "state_class": "total_increasing",
                 "icon": "mdi:battery-sync",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 12. collisions sensor
         (
@@ -232,8 +273,8 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "value_template": "{{ value_json.numberOfCollisions | int }}",
                 "state_class": "total_increasing",
                 "icon": "mdi:car-bumper",
-                "device": device_info
-            }
+                "device": device_info,
+            },
         ),
         # 13. gardena activity raw sensor, which shows the raw activity code without any interpretation, can be used for debugging or to create custom automations based on the raw activity code
         (
@@ -244,18 +285,24 @@ def publish_discovery(client: mqtt_client.Client, serial_number, model, manufact
                 "state_topic": state_topic,
                 "value_template": "{{ value_json.MowerActivity | replace('MowerActivity.', '') }}",
                 "icon": "mdi:code-json",
-                "device": device_info
-            }
-        )
+                "device": device_info,
+            },
+        ),
     ]
 
     for topic_suffix, payload in discovery_messages:
         full_topic = f"homeassistant/{topic_suffix}"
         client.publish(full_topic, json.dumps(payload), retain=True)
-        
+
     logger.info("Auto-Discovery Setup erfolgreich an Home Assistant gesendet!")
 
+
 async def process_command(payload):
+    """Processes incoming MQTT commands and executes corresponding mower actions. Supports START, PAUSE, PARK, CLEAR_ALL_SCHEDULES, and ADD_TASK commands with appropriate error handling and logging.
+    Args:        payload: The command payload received from MQTT,
+    expected to be a string like "START",
+    "PAUSE", "PARK", "CLEAR_ALL_SCHEDULES", or "ADD_TASK:day,start_h,start_m,duration_m".
+    """
     logger.info(f"Executing command: {payload}")
     try:
         if payload == "START":
@@ -273,39 +320,102 @@ async def process_command(payload):
             # It will stay there until the next scheduled task begins.
             logger.info("Sending Park command (Until next schedule)...")
             await m.mower_park()
-        if payload == "CLEAR_ALL_SCHEDULES":
+        elif payload == "CLEAR_ALL_SCHEDULES":
             logger.info("Starting transaction to clear all tasks...")
-            await m.command("StartTaskTransaction")
-            await m.command("DeleteAllTasks")
-            await m.command("CommitTaskTransaction") # Finalize the deletion
-            logger.info("All tasks deleted and transaction committed.")
+            transaction_open = False
+            try:
+                # Using timeouts to prevent freezing if Bluetooth connection drops
+                await asyncio.wait_for(m.command("StartTaskTransaction"), timeout=10.0)
+                transaction_open = True
+                await asyncio.wait_for(m.command("DeleteAllTasks"), timeout=10.0)
+                await asyncio.wait_for(m.command("CommitTaskTransaction"), timeout=15.0)
+                transaction_open = False
+                logger.info("All tasks deleted and transaction committed.")
+            except asyncio.TimeoutError:
+                logger.error("Bluetooth Timeout during CLEAR_ALL_SCHEDULES.")
+                if transaction_open:
+                    logger.warning(
+                        "CRITICAL: Timeout with an open transaction! Mower might block briefly."
+                    )
+            except Exception as e:
+                logger.error(f"Bluetooth Error during task deletion: {e}")
         elif payload.startswith("ADD_TASK:"):
             # Format: ADD_TASK:day,start_h,start_m,duration_m
             _, params = payload.split(":")
             p = params.split(",")
-            day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+            try:
+                # 1. Parsing & pre-validation BEFORE starting the transaction
+                day_idx = int(p[0])
+                h = int(p[1])
+                m_start = int(p[2])
+                dur = int(p[3])
+                # Logical plausibility check
+                if (
+                    not (0 <= day_idx <= 6)
+                    or not (0 <= h <= 23)
+                    or not (0 <= m_start <= 59)
+                    or dur <= 0
+                ):
+                    logger.error(
+                        f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
+                    )
+                    return  # Aborts here, so no broken transaction is started
+            except ValueError:
+                logger.error(
+                    f"Invalid payload format (non-numeric values detected): {payload}"
+                )
+                return
             logger.info(f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min")
-            # Step 1: Open Transaction (locks the mower's schedule for editing)
-            await m.command("StartTaskTransaction")
-            # Step 2: Add the Task
-            await m.command("AddTask", 
-                            day=day_idx, 
-                            start_h=h, 
-                            start_m=m_start, 
-                            duration_m=dur)
-            # Step 3: Commit (this is the 'Save' command in this library)
-            await m.command("CommitTaskTransaction")
-            logger.info("Task added and transaction committed successfully.")
+            transaction_open = False
+            try:
+                # 2. Execute with timeouts (max 10-15 seconds per command)
+                logger.debug("Opening transaction...")
+                await asyncio.wait_for(m.command("StartTaskTransaction"), timeout=10.0)
+                transaction_open = True  # Flag indicating the mower is in write mode
+                logger.debug("Sending task data...")
+                await asyncio.wait_for(
+                    m.command(
+                        "AddTask",
+                        day=day_idx,
+                        start_h=h,
+                        start_m=m_start,
+                        duration_m=dur,
+                    ),
+                    timeout=10.0,
+                )
+                logger.debug("Committing and saving transaction...")
+                await asyncio.wait_for(
+                    m.command("CommitTaskTransaction"), timeout=15.0
+                )  # slightly longer timeout for saving
+                transaction_open = False  # Successfully closed
+                logger.info("Task added and transaction committed successfully.")
+            except asyncio.TimeoutError:
+                logger.error("Bluetooth Timeout: The mower did not respond in time!")
+                if transaction_open:
+                    logger.warning(
+                        "CRITICAL: Timeout during an open transaction! Mower might be blocked until internal timeout."
+                    )
+            except Exception as inner_e:
+                logger.error(f"Bluetooth Error during transaction: {inner_e}")
+                if transaction_open:
+                    logger.warning(
+                        "CRITICAL: Error during open transaction! Subsequent commands might fail temporarily."
+                    )
         else:
             logger.warning(f"Unknown command received: {payload}")
     except Exception as e:
-        logger.error(f"Error occurred while sending command {payload}: {e}")
+        logger.error(f"Error occurred while processing command {payload}: {e}")
 
 
 async def connect(m: mower.Mower, client: mqtt_client.Client):
+    """Connects to the Gardena mower via Bluetooth, retrieves status information, and continuously publishes updates to MQTT. Also handles MQTT command processing in the event loop.
+    Args:
+    m: An instance of the mower class representing the Gardena mower.
+    client: The MQTT client instance for publishing status updates and receiving commands.
+    """
     global loop
     # Store the event loop reference for use in MQTT callbacks
-    loop = asyncio.get_running_loop() 
+    loop = asyncio.get_running_loop()
     try:
         logger.info("Start test mower")
         device = await BleakScanner.find_device_by_address(m.address)
@@ -327,12 +437,14 @@ async def connect(m: mower.Mower, client: mqtt_client.Client):
         manufacturer = await m.get_manufacturer()
         logger.info(f"Manufacturer {manufacturer}")
         msg.update({"Manufacturer": manufacturer})
-        
+
         serial_number = await m.command("GetSerialNumber")
         logger.info(f"Serial number : {serial_number}")
         msg.update({"SerialNumber": serial_number})
 
-        publish_discovery(client, serial_number, str(model), manufacturer, topic, topic_cmd)
+        publish_discovery(
+            client, serial_number, str(model), manufacturer, topic, topic_cmd
+        )
         while True:
             logger.info("Start sending keep Alive")
 
@@ -387,6 +499,9 @@ async def connect(m: mower.Mower, client: mqtt_client.Client):
 
 
 if __name__ == "__main__":
+    """Main entry point of the application. Parses configuration, connects to MQTT broker,
+    and initiates connection to the Gardena mower. Handles exceptions and ensures proper MQTT disconnection on exit.
+    """
     cfg_parser = GardenaCfg()
     result = cfg_parser.parse()
     broker = result["mqtt"]["broker"]
