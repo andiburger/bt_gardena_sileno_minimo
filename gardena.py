@@ -260,7 +260,7 @@ async def process_command(payload):
     try:
         # Depending on the command, call the appropriate method on the mower instance
         if payload == "START":
-            await m.command("Resume")  # starts or resumes mowing on the lawn
+            await m.command("Start")  # starts or resumes mowing on the lawn
         elif payload == "PAUSE":
             await m.command("Pause")  # pauses mowing on the lawn
         elif payload == "PARK":
