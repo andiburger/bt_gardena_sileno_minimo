@@ -272,7 +272,7 @@ async def process_command(payload):
             # Sends the mower back to the charging station.
             # It will stay there until the next scheduled task begins.
             logger.info("Sending Park command (Until next schedule)...")
-            await m.command("ParkUntilNextSchedule")
+            await m.mower_park()
         else:
             logger.warning(f"Unknown command received: {payload}")
     except Exception as e:
