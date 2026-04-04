@@ -84,3 +84,4 @@ venv.bak/
 
 # Project specific files (Credentials, configs, etc.)
 cfg.ini
+mycfg.ini
