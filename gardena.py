@@ -273,6 +273,29 @@ async def process_command(payload):
             # It will stay there until the next scheduled task begins.
             logger.info("Sending Park command (Until next schedule)...")
             await m.mower_park()
+        if payload == "CLEAR_ALL_SCHEDULES":
+            logger.info("Starting transaction to clear all tasks...")
+            await m.command("StartTaskTransaction")
+            await m.command("DeleteAllTasks")
+            await m.command("CommitTaskTransaction") # Finalize the deletion
+            logger.info("All tasks deleted and transaction committed.")
+        elif payload.startswith("ADD_TASK:"):
+            # Format: ADD_TASK:day,start_h,start_m,duration_m
+            _, params = payload.split(":")
+            p = params.split(",")
+            day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+            logger.info(f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min")
+            # Step 1: Open Transaction (locks the mower's schedule for editing)
+            await m.command("StartTaskTransaction")
+            # Step 2: Add the Task
+            await m.command("AddTask", 
+                            day=day_idx, 
+                            start_h=h, 
+                            start_m=m_start, 
+                            duration_m=dur)
+            # Step 3: Commit (this is the 'Save' command in this library)
+            await m.command("CommitTaskTransaction")
+            logger.info("Task added and transaction committed successfully.")
         else:
             logger.warning(f"Unknown command received: {payload}")
     except Exception as e:
