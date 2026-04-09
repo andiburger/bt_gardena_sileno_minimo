@@ -1,3 +1,10 @@
+"""
+Gardena Sileno Minimo BLE to MQTT Bridge
+Optimized for Home Assistant Auto-Discovery with Smart Polling (Connect-on-Demand)
+and Secure Transactions.
+Author: __ABu__ / Refactored
+"""
+
 from automower_ble import mower
 from bleak import BleakScanner
 import asyncio
@@ -7,9 +14,14 @@ from paho.mqtt import client as mqtt_client
 from cfg_parser import GardenaCfg
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+# --- Configuration & Logging ---
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
-loop = None  # Global variable to hold the event loop, if needed for future use
+
+# --- Global Variables ---
+loop = None
 broker = None
 address = None
 m = None
@@ -17,45 +29,34 @@ port = None
 topic = None
 topic_cmd = None
 error_counter = 0
-# Generate a Client ID with the publish prefix.
+
+# Generate a Client ID
 client_id = f"publish-{random.randint(0, 1000)}"
-# msg to be published on mqtt
 msg = {}
+
+# Flags and Locks for the Smart Polling Architecture
+discovery_sent = False
+mower_static_info = {}
+ble_lock = asyncio.Lock()  # Prevents simultaneous Bluetooth commands/polling
 
 
 def connect_mqtt():
     """
     Connects to the MQTT broker and sets up callbacks for connection and message handling.
-    The on_connect callback subscribes to the command topic upon successful connection.
-    The on_message callback processes incoming commands and executes them in the event loop to avoid blocking.
     """
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        """Callback function for MQTT connection. Subscribes to command topic on successful connection.
-        Args:
-            client: The MQTT client instance.
-            userdata: User-defined data passed to the callback.
-            flags: Response flags sent by the broker.
-            reason_code: The MQTT connection result code.
-            properties: MQTT v5.0 properties (not used here)."""
         if reason_code == 0:
             logger.info("Connected to MQTT Broker!")
-            # subscribe to command topic after successful connection
             if topic_cmd:
                 client.subscribe(topic_cmd)
                 logger.info(f"Subscribed to command topic: {topic_cmd}")
         else:
             logger.error(f"Failed to connect, return code {reason_code}")
 
-    # supports MQTT v5.0 for better callback handling
-    def on_message(client, userdata, msg):
-        """Callback function for incoming MQTT messages. Decodes the payload and processes commands in the event loop.
-        Args:
-            client: The MQTT client instance.
-            userdata: User-defined data passed to the callback.
-            msg: The MQTT message instance containing topic and payload."""
-        payload = msg.payload.decode("utf-8")
-        logger.info(f"MQTT Command empfangen: {payload}")
+    def on_message(client, userdata, incoming_msg):
+        payload = incoming_msg.payload.decode("utf-8")
+        logger.info(f"MQTT Command received: {payload}")
         if loop and m:
             # execute the command in the event loop to avoid blocking the MQTT thread
             asyncio.run_coroutine_threadsafe(process_command(payload), loop)
@@ -71,20 +72,15 @@ def connect_mqtt():
     return client
 
 
-def publish(client: mqtt_client.Client, msg):
-    """Publishes a message to the MQTT topic. The message is converted to JSON format before publishing.
-    Args:
-        client: The MQTT client instance.
-        msg: The message to be published.
-    Raises:
-        ValueError: If the MQTT topic is not set before publishing.
-    """
+def publish(client: mqtt_client.Client, msg_payload):
+    """Publishes a message to the MQTT state topic."""
     if topic is None:
         raise ValueError("MQTT topic must be set before publishing.")
-    result = client.publish(topic, json.dumps(msg, indent=4))
+    # Using retain=True so Home Assistant always has the latest state upon reboot
+    result = client.publish(topic, json.dumps(msg_payload, indent=4), retain=True)
     status = result[0]
     if status == 0:
-        logger.info(f"Send `{msg}` to topic `{topic}`")
+        logger.info(f"Sent state payload to topic `{topic}`")
     else:
         logger.error(f"Failed to send message to topic {topic}")
 
@@ -97,12 +93,8 @@ def publish_discovery(
     state_topic,
     cmd_topic,
 ):
-    """Publishes Home Assistant Auto-Discovery configuration messages for the Gardena mower. This allows Home Assistant to automatically detect and integrate the mower with multiple sensors and a lawn mower entity.
-    Args:
-        client: The MQTT client instance.
-        serial_number: The serial number of the mower.
-        model: The model of the mower.
-        manufacturer: The manufacturer of the mower.
+    """
+    Publishes Home Assistant Auto-Discovery configuration messages for the Gardena mower.
     """
     device_info = {
         "identifiers": [f"gardena_{serial_number}"],
@@ -111,9 +103,8 @@ def publish_discovery(
         "model": model,
     }
 
-    # list of all values to be published for Home Assistant Auto-Discovery
     discovery_messages = [
-        # 1. the lawn mower entity itself, which can be used to show the current activity and send commands to the mower
+        # 1. Lawn Mower Entity
         (
             "lawn_mower/gardena_minimo/mower/config",
             {
@@ -130,7 +121,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 2. detailed status sensor, which shows the raw activity code as well as a human readable status (e.g. mowing, searching, etc.)
+        # 2. Detailed Status Sensor
         (
             "sensor/gardena_minimo/detailstatus/config",
             {
@@ -142,7 +133,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 3. battery level sensor
+        # 3. Battery Level Sensor
         (
             "sensor/gardena_minimo/battery/config",
             {
@@ -155,7 +146,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 4. charging status sensor
+        # 4. Charging Status Sensor
         (
             "binary_sensor/gardena_minimo/is_charging/config",
             {
@@ -169,7 +160,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 5. next start sensor
+        # 5. Next Start Sensor
         (
             "sensor/gardena_minimo/next_start/config",
             {
@@ -181,7 +172,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 6. blade usage sensor
+        # 6. Blade Usage Sensor
         (
             "sensor/gardena_minimo/blade_usage/config",
             {
@@ -195,7 +186,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 7. total running time sensor
+        # 7. Total Running Time Sensor
         (
             "sensor/gardena_minimo/total_running/config",
             {
@@ -209,7 +200,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 8. pure mowing time sensor
+        # 8. Pure Mowing Time Sensor
         (
             "sensor/gardena_minimo/total_cutting/config",
             {
@@ -223,7 +214,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 9. searching time sensor
+        # 9. Searching Time Sensor
         (
             "sensor/gardena_minimo/total_searching/config",
             {
@@ -237,7 +228,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 10. total charging time sensor
+        # 10. Total Charging Time Sensor
         (
             "sensor/gardena_minimo/total_charging/config",
             {
@@ -251,7 +242,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 11. charge cycles sensor
+        # 11. Charge Cycles Sensor
         (
             "sensor/gardena_minimo/charge_cycles/config",
             {
@@ -264,7 +255,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 12. collisions sensor
+        # 12. Collisions Sensor
         (
             "sensor/gardena_minimo/collisions/config",
             {
@@ -277,7 +268,7 @@ def publish_discovery(
                 "device": device_info,
             },
         ),
-        # 13. gardena activity raw sensor, which shows the raw activity code without any interpretation, can be used for debugging or to create custom automations based on the raw activity code
+        # 13. Gardena Activity Raw Sensor
         (
             "sensor/gardena_minimo/activity_raw/config",
             {
@@ -295,213 +286,252 @@ def publish_discovery(
         full_topic = f"homeassistant/{topic_suffix}"
         client.publish(full_topic, json.dumps(payload), retain=True)
 
-    logger.info("Auto-Discovery Setup erfolgreich an Home Assistant gesendet!")
+    logger.info("Auto-Discovery Setup successfully sent to Home Assistant!")
 
 
 async def process_command(payload):
-    """Processes incoming MQTT commands and executes corresponding mower actions. Supports START, PAUSE, PARK, CLEAR_ALL_SCHEDULES, and ADD_TASK commands with appropriate error handling and logging.
-    Args:        payload: The command payload received from MQTT,
-    expected to be a string like "START",
-    "PAUSE", "PARK", "CLEAR_ALL_SCHEDULES", or "ADD_TASK:day,start_h,start_m,duration_m".
     """
-    logger.info(f"Executing command: {payload}")
-    try:
-        if payload == "START":
-            # Forces the mower to start immediately by overriding the schedule.
-            # Uses the built-in library function which sets Mode to AUTO,
-            # defines the duration (default 3h), and sends the StartTrigger.
-            logger.info("Sending Override (Immediate start for 3 hours)...")
-            await m.mower_override()
-        elif payload == "PAUSE":
-            # Immediately pauses the mower at its current location.
-            logger.info("Sending Pause command...")
-            await m.command("Pause")
-        elif payload == "PARK":
-            # Sends the mower back to the charging station.
-            # It will stay there until the next scheduled task begins.
-            logger.info("Sending Park command (Until next schedule)...")
-            await m.mower_park()
-        elif payload == "CLEAR_ALL_SCHEDULES":
-            logger.info("Starting transaction to clear all tasks...")
-            transaction_open = False
-            try:
-                # Using timeouts to prevent freezing if Bluetooth connection drops
-                await asyncio.wait_for(m.command("StartTaskTransaction"), timeout=10.0)
-                transaction_open = True
-                await asyncio.wait_for(m.command("DeleteAllTasks"), timeout=10.0)
-                await asyncio.wait_for(m.command("CommitTaskTransaction"), timeout=15.0)
-                transaction_open = False
-                logger.info("All tasks deleted and transaction committed.")
-            except asyncio.TimeoutError:
-                logger.error("Bluetooth Timeout during CLEAR_ALL_SCHEDULES.")
-                if transaction_open:
-                    logger.warning(
-                        "CRITICAL: Timeout with an open transaction! Mower might block briefly."
-                    )
-            except Exception as e:
-                logger.error(f"Bluetooth Error during task deletion: {e}")
-        elif payload.startswith("ADD_TASK:"):
-            # Format: ADD_TASK:day,start_h,start_m,duration_m
+    Safely processes incoming commands (Start, Pause, Park, Schedule).
+    Implements Connect-on-Demand to avoid interrupting the deep sleep.
+    """
+    if payload.startswith("ADD_TASK:"):
+        try:
             _, params = payload.split(":")
             p = params.split(",")
-            try:
-                # 1. Parsing & pre-validation BEFORE starting the transaction
-                day_idx = int(p[0])
-                h = int(p[1])
-                m_start = int(p[2])
-                dur = int(p[3])
-                # Logical plausibility check
-                if (
-                    not (0 <= day_idx <= 6)
-                    or not (0 <= h <= 23)
-                    or not (0 <= m_start <= 59)
-                    or dur <= 0
-                ):
-                    logger.error(
-                        f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
-                    )
-                    return  # Aborts here, so no broken transaction is started
-            except ValueError:
+            day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+            if (
+                not (0 <= day_idx <= 6)
+                or not (0 <= h <= 23)
+                or not (0 <= m_start <= 59)
+                or dur <= 0
+            ):
                 logger.error(
-                    f"Invalid payload format (non-numeric values detected): {payload}"
+                    f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
                 )
                 return
-            logger.info(f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min")
-            transaction_open = False
-            try:
-                # 2. Execute with timeouts (max 10-15 seconds per command)
-                logger.debug("Opening transaction...")
-                await asyncio.wait_for(m.command("StartTaskTransaction"), timeout=10.0)
-                transaction_open = True  # Flag indicating the mower is in write mode
-                logger.debug("Sending task data...")
-                await asyncio.wait_for(
-                    m.command(
-                        "AddTask",
-                        day=day_idx,
-                        start_h=h,
-                        start_m=m_start,
-                        duration_m=dur,
-                    ),
-                    timeout=10.0,
-                )
-                logger.debug("Committing and saving transaction...")
-                await asyncio.wait_for(
-                    m.command("CommitTaskTransaction"), timeout=15.0
-                )  # slightly longer timeout for saving
-                transaction_open = False  # Successfully closed
-                logger.info("Task added and transaction committed successfully.")
-            except asyncio.TimeoutError:
-                logger.error("Bluetooth Timeout: The mower did not respond in time!")
-                if transaction_open:
-                    logger.warning(
-                        "CRITICAL: Timeout during an open transaction! Mower might be blocked until internal timeout."
-                    )
-            except Exception as inner_e:
-                logger.error(f"Bluetooth Error during transaction: {inner_e}")
-                if transaction_open:
-                    logger.warning(
-                        "CRITICAL: Error during open transaction! Subsequent commands might fail temporarily."
-                    )
-        else:
-            logger.warning(f"Unknown command received: {payload}")
-    except Exception as e:
-        logger.error(f"Error occurred while processing command {payload}: {e}")
-
-
-async def connect(m: mower.Mower, client: mqtt_client.Client):
-    """Connects to the Gardena mower via Bluetooth, retrieves status information, and continuously publishes updates to MQTT. Also handles MQTT command processing in the event loop.
-    Args:
-    m: An instance of the mower class representing the Gardena mower.
-    client: The MQTT client instance for publishing status updates and receiving commands.
-    """
-    global loop
-    # Store the event loop reference for use in MQTT callbacks
-    loop = asyncio.get_running_loop()
-    try:
-        logger.info("Start test mower")
-        device = await BleakScanner.find_device_by_address(m.address)
-        if device is None:
-            logger.error("Unable to connect to device address: " + m.address)
+        except ValueError:
             logger.error(
-                "Please make sure the device address is correct, the device is powered on and nearby"
+                f"Invalid payload format (non-numeric values detected): {payload}"
             )
             return
-        logger.info(f"Device found. Start connecting to device {m.address}")
-        await m.connect(device)
-        logger.info(f"Connected to device with address {m.address}")
-        logger.info(f"Mower : {m}")
 
-        model = await m.get_model()
-        logger.info(f"Model : {model} ")
-        msg.update({"Model": str(model)})
+    # Request the Bluetooth lock to ensure no polling interferes
+    async with ble_lock:
+        try:
+            logger.info("Command execution: Scanning for mower...")
+            device = await BleakScanner.find_device_by_address(address)
+            if not device:
+                logger.error("Command failed: Mower not found in Bluetooth range.")
+                return
 
-        manufacturer = await m.get_manufacturer()
-        logger.info(f"Manufacturer {manufacturer}")
-        msg.update({"Manufacturer": manufacturer})
+            await asyncio.wait_for(m.connect(device), timeout=15.0)
 
-        serial_number = await m.command("GetSerialNumber")
-        logger.info(f"Serial number : {serial_number}")
-        msg.update({"SerialNumber": serial_number})
-
-        publish_discovery(
-            client, serial_number, str(model), manufacturer, topic, topic_cmd
-        )
-        while True:
-            logger.info("Start sending keep Alive")
-
-            activity = await m.mower_activity()
-            logger.info(f"Mower activity : {activity}")
-            msg.update({"MowerActivity": str(activity)})
-
-            statuses = await m.command("GetAllStatistics")
-            if isinstance(statuses, dict):
-                for status, value in statuses.items():
-                    logger.info(f"{status} {value}")
-                    msg.update({str(status): value})
-            else:
-                logger.warning(
-                    f"Unexpected type for statuses: {type(statuses)} - {statuses}"
-                )
-
-            is_charging = await m.is_charging()
-            logger.info(f"Is charging {is_charging}")
-            msg.update({"IsCharging": is_charging})
-
-            battery_level = await m.battery_level()
-            logger.info(f"Battery level {battery_level}")
-            msg.update({"BatteryLevel": battery_level})
-
-            next_start_time = await m.mower_next_start_time()
-            if next_start_time:
+            if payload == "START":
+                logger.info("Sending Override (Immediate start for 3 hours)...")
+                await m.mower_override()
+            elif payload == "PAUSE":
+                logger.info("Sending Pause command...")
+                await m.command("Pause")
+            elif payload == "PARK":
+                logger.info("Sending Park command (Until next schedule)...")
+                await m.mower_park()
+            elif payload == "CLEAR_ALL_SCHEDULES":
+                logger.info("Starting transaction to clear all tasks...")
+                transaction_open = False
+                try:
+                    await asyncio.wait_for(
+                        m.command("StartTaskTransaction"), timeout=10.0
+                    )
+                    transaction_open = True
+                    await asyncio.wait_for(m.command("DeleteAllTasks"), timeout=10.0)
+                    await asyncio.wait_for(
+                        m.command("CommitTaskTransaction"), timeout=15.0
+                    )
+                    transaction_open = False
+                    logger.info("All tasks deleted and transaction committed.")
+                except asyncio.TimeoutError:
+                    if transaction_open:
+                        logger.warning(
+                            "CRITICAL: Timeout with an open transaction! Mower might block briefly."
+                        )
+            elif payload.startswith("ADD_TASK:"):
                 logger.info(
-                    "Next start time: " + next_start_time.strftime("%Y-%m-%d %H:%M:%S")
+                    f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min"
                 )
-                msg.update(
-                    {"Next start time": next_start_time.strftime("%Y-%m-%d %H:%M:%S")}
-                )
-            else:
-                logger.info("No next start time")
+                transaction_open = False
+                try:
+                    await asyncio.wait_for(
+                        m.command("StartTaskTransaction"), timeout=10.0
+                    )
+                    transaction_open = True
+                    await asyncio.wait_for(
+                        m.command(
+                            "AddTask",
+                            day=day_idx,
+                            start_h=h,
+                            start_m=m_start,
+                            duration_m=dur,
+                        ),
+                        timeout=10.0,
+                    )
+                    await asyncio.wait_for(
+                        m.command("CommitTaskTransaction"), timeout=15.0
+                    )
+                    transaction_open = False
+                    logger.info("Task added and transaction committed successfully.")
+                except asyncio.TimeoutError:
+                    if transaction_open:
+                        logger.warning(
+                            "CRITICAL: Timeout during an open transaction! Subsequent commands might fail temporarily."
+                        )
 
-            mower_state = await m.mower_state()
-            logger.info(f"Mower state response {mower_state}")
-            msg.update({"MowerStateResponse": str(mower_state)})
+        except Exception as e:
+            logger.error(f"Error processing command {payload}: {e}")
+        finally:
+            # Always disconnect after a command to free up BlueZ
+            if hasattr(m, "disconnect"):
+                await m.disconnect()
 
-            mower_activity = await m.mower_activity()
-            logger.info(f"MowerActivity : {mower_activity}")
 
-            logger.info("publish")
+async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
+    """
+    Connects to the mower, reads all data matching the exact Home Assistant
+    JSON schema, sends the payload, and disconnects immediately.
+    """
+    global discovery_sent, mower_static_info
+
+    # Request the Bluetooth lock to ensure no commands interfere
+    async with ble_lock:
+        device = await BleakScanner.find_device_by_address(m.address)
+        if device is None:
+            return "NOT_FOUND"
+
+        try:
+            await asyncio.wait_for(m.connect(device), timeout=15.0)
+
+            # 1. Fetch Static Info & Run HA Discovery (Only Once!)
+            if not mower_static_info:
+                model = await m.get_model()
+                manufacturer = await m.get_manufacturer()
+                serial_num = await m.command("GetSerialNumber")
+
+                mower_static_info = {
+                    "Model": str(model),
+                    "Manufacturer": str(manufacturer),
+                    "SerialNumber": (
+                        int(serial_num)
+                        if str(serial_num).isdigit()
+                        else str(serial_num)
+                    ),
+                }
+
+                if not discovery_sent:
+                    publish_discovery(
+                        client, serial_num, str(model), manufacturer, topic, topic_cmd
+                    )
+                    discovery_sent = True
+
+            # Clear previous dynamic data and load static info
+            global msg
+            msg.clear()
+            msg.update(mower_static_info)
+
+            # 2. Fetch Core Operational Data
+            activity = await m.mower_activity()
+            state = await m.mower_state()
+            battery = await m.battery_level()
+            is_charging = await m.is_charging()  # Using your native function!
+
+            msg.update(
+                {
+                    "MowerActivity": str(activity),
+                    "MowerStateResponse": str(state),
+                    "IsCharging": is_charging,
+                    "BatteryLevel": battery,
+                }
+            )
+
+            # 3. Fetch Next Scheduled Start Time
+            try:
+                next_start_time = (
+                    await m.mower_next_start_time()
+                )  # Using your native function!
+                if next_start_time:
+                    msg.update(
+                        {
+                            "Next start time": next_start_time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                        }
+                    )
+                else:
+                    msg.update({"Next start time": "None"})
+            except Exception as time_err:
+                logger.debug(f"Could not fetch next start time: {time_err}")
+
+            # 4. Fetch All Statistics (Running Time, Collisions, etc.)
+            try:
+                statuses = await m.command("GetAllStatistics")
+                if isinstance(statuses, dict):
+                    # We inject the exact keys like 'totalRunningTime' into our payload
+                    for status, value in statuses.items():
+                        msg.update({str(status): value})
+            except Exception as stat_err:
+                logger.warning(f"Could not fetch extended statistics: {stat_err}")
+
+            # Send exactly formatted JSON to MQTT
             publish(client, msg)
-            await asyncio.sleep(
-                60
-            )  # sleep for 1 minute and than try to retrieve data again
-    except Exception as e:
-        logger.error("There was an issue communicating with the device")
-        raise e
+
+            return str(activity)
+
+        finally:
+            if hasattr(m, "disconnect"):
+                await m.disconnect()
+
+
+async def main_loop():
+    """
+    Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
+    """
+    global error_counter, m
+
+    while True:
+        try:
+            # Create a new mower instance for each connection attempt to ensure a clean state
+            m = mower.Mower(random.randint(100000000, 999999999), address, pin)
+
+            # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
+            activity = await poll_mower_data(m, client)
+
+            # --- Smart Polling Interval Logic ---
+            if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
+                sleep_time = 60  # Mower is active, poll every minute
+                logger.info("Mower is ACTIVE. Sleeping for 60 seconds.")
+            elif activity == "NOT_FOUND":
+                sleep_time = 120  # Out of range, check every 2 minutes
+                logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
+            else:
+                sleep_time = 900  # Parked/Charging/Idle, poll every 15 minutes
+                logger.info("Mower is IDLE/PARKED. Sleeping for 15 minutes.")
+
+            await asyncio.sleep(sleep_time)
+
+        except Exception as e:
+            error_counter += 1
+            logger.error(f"Main connection loop crashed: {e}")
+
+            # Update the MQTT message with error information and publish it
+            msg.update({"Error": str(e), "Error Counter": error_counter})
+            publish(client, msg)
+
+            # Wait for BlueZ hardware cleanup before retrying
+            logger.info("Waiting 30 seconds for BlueZ cleanup before reconnecting...")
+            await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
-    """Main entry point of the application. Parses configuration, connects to MQTT broker,
-    and initiates connection to the Gardena mower. Handles exceptions and ensures proper MQTT disconnection on exit.
+    """
+    Main entry point.
     """
     cfg_parser = GardenaCfg()
     result = cfg_parser.parse()
@@ -514,14 +544,15 @@ if __name__ == "__main__":
 
     client = connect_mqtt()
     client.loop_start()
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     try:
-        m = mower.Mower(random.randint(100000000, 999999999), address, pin)
-        asyncio.run(connect(m, client))
-    except Exception as e:
-        error_counter += 1
-        logger.error(e)
-        msg.update({"Error": str(e)})
-        msg.update({"Error Counter": error_counter})
-        publish(client, msg)
-    client.loop_stop()
-    client.disconnect()
+        loop.run_until_complete(main_loop())
+    except KeyboardInterrupt:
+        logger.info("Script manually terminated.")
+    finally:
+        client.loop_stop()
+        client.disconnect()
+        loop.close()
