@@ -15,9 +15,7 @@ from cfg_parser import GardenaCfg
 import logging
 
 # --- Configuration & Logging ---
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # --- Global Variables ---
@@ -546,6 +544,16 @@ if __name__ == "__main__":
     """
     cfg_parser = GardenaCfg()
     result = cfg_parser.parse()
+    log_level_str = result["system"]["log_level"]
+    # Convert log level string to numeric value
+    numeric_level = getattr(logging, log_level_str, logging.INFO)
+
+    # Set log level for our logger
+    logger.setLevel(numeric_level)
+    # Also set the root logger level to ensure all messages are captured according to the configured level
+    logging.getLogger().setLevel(numeric_level)
+
+    logger.info(f"Starting Gardena BLE to MQTT Bridge (Log Level: {log_level_str})...")
     broker = result["mqtt"]["broker"]
     port = int(result["mqtt"]["port"])
     topic = result["mqtt"]["topic"]

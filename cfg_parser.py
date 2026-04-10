@@ -19,46 +19,69 @@ class GardenaCfg:
     Methods
     -------
     parse():
-        Parses the cfg file (cfg.ini) and returns values as dict.
+        Parses the cfg file (cfg.ini) and returns values as dict with safe defaults.
     """
 
     def __init__(self):
-        """Initializes the GardenaCfg class by creating a ConfigParser instance and preparing it for parsing."""
+        """Initializes the GardenaCfg class by creating a ConfigParser instance."""
         self.config = configparser.ConfigParser()
-        self.config.sections()
         return
 
     def parse(self):
-        """ "Parses the configuration file (cfg.ini) and extracts the necessary information for the mower and MQTT settings. The extracted values are organized into a nested dictionary structure for easy access.
-        Returns:
-            dict: A dictionary containing the mower and MQTT configuration settings.
         """
+        Parses the configuration file (cfg.ini) and extracts the necessary information.
+        If keys are missing, safe fallback defaults are provided to prevent crashes.
+        """
+        # Wir lesen die Datei (falls sie nicht existiert, bleibt config leer, aber das Skript stürzt dank der Fallbacks nicht ab!)
         self.config.read("cfg.ini")
-        result = {"mower": {}, "mqtt": {}}
+
+        result = {"mower": {}, "mqtt": {}, "system": {}}
+
+        # --- MOWER SETTINGS (mit Fallbacks) ---
         result["mower"].update(
             {
-                "address": self.config["mower"]["address"],
-                "pin": self.config["mower"]["pin"],
+                # Fallback auf Dummy-Mac, falls vergessen
+                "address": self.config.get(
+                    "mower", "address", fallback="00:00:00:00:00:00"
+                ),
+                # Standard Gardena PIN
+                "pin": self.config.get("mower", "pin", fallback="0000"),
             }
         )
+
+        # --- MQTT SETTINGS (mit Fallbacks) ---
         result["mqtt"].update(
             {
-                "broker": self.config["mqtt"]["broker"],
-                "port": self.config["mqtt"]["port"],
-                "topic": self.config["mqtt"]["topic"],
-                "topic_cmd": self.config["mqtt"]["topic_cmd"],
+                # Fallback auf localhost, falls der Broker auf dem gleichen Pi läuft
+                "broker": self.config.get("mqtt", "broker", fallback="127.0.0.1"),
+                # Standard MQTT Port
+                "port": self.config.get("mqtt", "port", fallback="1883"),
+                # Standard Topics, damit Home Assistant sie auf jeden Fall findet
+                "topic": self.config.get(
+                    "mqtt", "topic", fallback="gardena/automower/status"
+                ),
+                "topic_cmd": self.config.get(
+                    "mqtt", "topic_cmd", fallback="gardena/automower/cmd"
+                ),
             }
         )
+
+        # --- SYSTEM SETTINGS (mit Fallbacks) ---
+        result["system"].update(
+            {
+                # Standardmäßig auf INFO, wenn nichts angegeben ist
+                "log_level": self.config.get(
+                    "system", "log_level", fallback="INFO"
+                ).upper()
+            }
+        )
+
         return result
 
 
 # just for test purposes
 if __name__ == "__main__":
-    """Test block to verify that the GardenaCfg class correctly parses the configuration
-    file and returns the expected dictionary structure. This block will execute when the script is run directly,
-    allowing for quick validation of the configuration parsing functionality.
-    In a production environment, this block can be removed or replaced with proper unit tests.
-    """
     gardenaCfg = GardenaCfg()
     res = gardenaCfg.parse()
+    print("Parsed Config with Defaults:")
     print(res)

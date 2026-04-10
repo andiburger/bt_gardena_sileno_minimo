@@ -44,32 +44,27 @@ def test_gardena_cfg_parse_success():
         assert result["mqtt"]["topic_cmd"] == "mower/cmd"
 
 
-def test_gardena_cfg_missing_key():
+def test_gardena_cfg_uses_defaults():
     """
-    Tests if the parser raises a KeyError when a required key is missing
-    in the configuration file.
+    Tests if the parser applies the correct default fallback values
+    when keys are completely missing in the configuration file.
     """
     cfg_parser = GardenaCfg()
 
-    # We simulate an incomplete configuration (pin is missing)
-    cfg_parser.config.read_dict(
-        {
-            "mower": {
-                "address": "AA:BB:CC:DD:EE:FF"
-                # 'pin' is intentionally missing
-            },
-            "mqtt": {
-                "broker": "192.168.1.100",
-                "port": "1883",
-                "topic": "mower/status",
-                "topic_cmd": "mower/cmd",
-            },
-        }
-    )
+    # We simulate a completely empty configuration!
+    cfg_parser.config.read_dict({})
 
     with patch.object(cfg_parser.config, "read"):
-        # If we call parse() now, Python MUST raise a KeyError.
-        # pytest.raises catches this error and lets the test "pass",
-        # because that is the exact expected behavior for faulty files.
-        with pytest.raises(KeyError):
-            cfg_parser.parse()
+        # Execute the parse method
+        result = cfg_parser.parse()
+
+        # Now we assert that the fallbacks successfully kicked in!
+        assert result["mower"]["address"] == "00:00:00:00:00:00"
+        assert result["mower"]["pin"] == "0000"
+
+        assert result["mqtt"]["broker"] == "127.0.0.1"
+        assert result["mqtt"]["port"] == "1883"
+        assert result["mqtt"]["topic"] == "gardena/automower/status"
+        assert result["mqtt"]["topic_cmd"] == "gardena/automower/cmd"
+
+        assert result["system"]["log_level"] == "INFO"
