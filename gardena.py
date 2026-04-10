@@ -16,7 +16,7 @@ import logging
 
 # --- Configuration & Logging ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -390,7 +390,12 @@ async def process_command(payload):
         finally:
             # Always disconnect after a command to free up BlueZ
             if hasattr(m, "disconnect"):
-                await m.disconnect()
+                try:
+                    await m.disconnect()
+                except Exception as clean_err:
+                    logger.debug(
+                        f"Ignored cleanup error in process_command: {clean_err}"
+                    )
 
 
 async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
@@ -486,7 +491,12 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
 
         finally:
             if hasattr(m, "disconnect"):
-                await m.disconnect()
+                try:
+                    await m.disconnect()
+                except Exception as clean_err:
+                    logger.debug(
+                        f"Ignored cleanup error in poll_mower_data: {clean_err}"
+                    )
 
 
 async def main_loop():
