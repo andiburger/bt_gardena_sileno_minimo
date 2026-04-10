@@ -325,6 +325,9 @@ async def process_command(payload):
                 return
 
             await asyncio.wait_for(m.connect(device), timeout=15.0)
+            await asyncio.sleep(
+                1.0
+            )  # Short delay to ensure connection stability before sending commands
 
             if payload == "START":
                 logger.info("Sending Override (Immediate start for 3 hours)...")
@@ -413,6 +416,9 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
 
         try:
             await asyncio.wait_for(m.connect(device), timeout=15.0)
+            await asyncio.sleep(
+                1.0
+            )  # Short delay to ensure connection stability before sending commands
 
             # 1. Fetch Static Info & Run HA Discovery (Only Once!)
             if not mower_static_info:
@@ -530,11 +536,6 @@ async def main_loop():
             error_counter += 1
             logger.error(f"Main connection loop crashed: {e}")
 
-            # Update the MQTT message with error information and publish it
-            msg.update({"Error": str(e), "Error Counter": error_counter})
-            publish(client, msg)
-
-            # Wait for BlueZ hardware cleanup before retrying
             logger.info("Waiting 30 seconds for BlueZ cleanup before reconnecting...")
             await asyncio.sleep(30)
 
