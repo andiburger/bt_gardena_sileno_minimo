@@ -519,14 +519,14 @@ async def main_loop():
 
             # --- Smart Polling Interval Logic ---
             if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
-                sleep_time = 60  # Mower is active, poll every minute
-                logger.info("Mower is ACTIVE. Sleeping for 60 seconds.")
+                sleep_time = result["system"]["poll_active"]
+                logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
             elif activity == "NOT_FOUND":
-                sleep_time = 120  # Out of range, check every 2 minutes
+                sleep_time = 120
                 logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
             else:
-                sleep_time = 900  # Parked/Charging/Idle, poll every 15 minutes
-                logger.info("Mower is IDLE/PARKED. Sleeping for 15 minutes.")
+                sleep_time = result["system"]["poll_idle"]
+                logger.info(f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds.")
 
             await asyncio.sleep(sleep_time)
 
@@ -542,6 +542,9 @@ if __name__ == "__main__":
     """
     Main entry point.
     """
+    import signal
+    import sys
+
     cfg_parser = GardenaCfg()
     result = cfg_parser.parse()
     log_level_str = result["system"]["log_level"]
@@ -567,11 +570,24 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    try:
-        loop.run_until_complete(main_loop())
-    except KeyboardInterrupt:
-        logger.info("Script manually terminated.")
-    finally:
+    def shutdown_handler(sig, frame):
+        logger.info("Received stop signal (SIGTERM/SIGINT). Shutting down safely...")
         client.loop_stop()
         client.disconnect()
-        loop.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown_handler)  # Handle Ctrl+C gracefully
+    signal.signal(
+        signal.SIGTERM, shutdown_handler
+    )  # Handle docker stop or system shutdown gracefully
+
+    try:
+        loop.run_until_complete(main_loop())
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+    finally:
+        # Fallback Cleanup
+        client.loop_stop()
+        client.disconnect()
+        if not loop.is_closed():
+            loop.close()

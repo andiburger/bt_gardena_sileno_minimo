@@ -69,10 +69,19 @@ class GardenaCfg:
         # --- SYSTEM SETTINGS (mit Fallbacks) ---
         result["system"].update(
             {
-                # Standardmäßig auf INFO, wenn nichts angegeben ist
                 "log_level": self.config.get(
                     "system", "log_level", fallback="INFO"
-                ).upper()
+                ).upper(),
+                # NEU: Konfigurierbare Polling-Zeiten (in Sekunden)
+                "poll_active": int(
+                    self.config.get("system", "poll_active", fallback="60")
+                ),
+                "poll_idle": int(
+                    self.config.get("system", "poll_idle", fallback="900")
+                ),
+                "poll_error": int(
+                    self.config.get("system", "poll_error", fallback="30")
+                ),
             }
         )
 
