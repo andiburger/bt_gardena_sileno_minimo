@@ -503,7 +503,7 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
                     )
 
 
-async def main_loop():
+async def main_loop(config: dict):
     """
     Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
     """
@@ -519,13 +519,13 @@ async def main_loop():
 
             # --- Smart Polling Interval Logic ---
             if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
-                sleep_time = result["system"]["poll_active"]
+                sleep_time = config["system"]["poll_active"]
                 logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
             elif activity == "NOT_FOUND":
                 sleep_time = 120
                 logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
             else:
-                sleep_time = result["system"]["poll_idle"]
+                sleep_time = config["system"]["poll_idle"]
                 logger.info(f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds.")
 
             await asyncio.sleep(sleep_time)
@@ -582,7 +582,7 @@ if __name__ == "__main__":
     )  # Handle docker stop or system shutdown gracefully
 
     try:
-        loop.run_until_complete(main_loop())
+        loop.run_until_complete(main_loop(result["system"]))
     except Exception as e:
         logger.error(f"Fatal error: {e}")
     finally:
