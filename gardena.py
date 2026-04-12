@@ -516,7 +516,7 @@ async def main_loop(config: dict):
 
             # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
             activity = await poll_mower_data(m, client)
-
+            error_counter = 0  # Reset error counter after a successful cycle
             # --- Smart Polling Interval Logic ---
             if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
                 sleep_time = config["system"]["poll_active"]
