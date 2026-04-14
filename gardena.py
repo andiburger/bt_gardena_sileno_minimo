@@ -441,7 +441,6 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
                     discovery_sent = True
 
             # Clear previous dynamic data and load static info
-            global msg
             msg.clear()
             msg.update(mower_static_info)
 
