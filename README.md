@@ -72,3 +72,4 @@ Gardena mowers require an OS-level confirmation for the very first pairing.
 ## 📄 License
 
 MIT License – see LICENSE
+
