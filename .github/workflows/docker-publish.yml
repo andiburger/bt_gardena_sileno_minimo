@@ -3,8 +3,9 @@ name: Docker Build & Publish
 on:
   push:
     branches: [ "main" ]
-  # build and publish also when a new release is created in GitHub
+  release:                 # <--- DIESE ZEILE HAT GEFEHLT!
     types: [published]
+  workflow_dispatch:       # <--- Für den manuellen "Play-Button"
 
 env:
   REGISTRY: ghcr.io
