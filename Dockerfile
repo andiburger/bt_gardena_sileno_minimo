@@ -1,33 +1,25 @@
 # Dockerfile for Gardena BLE Automower MQTT Bridge
-FROM python:3.13-alpine
+FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies needed for Bluetooth and DBus
-RUN apk add --no-cache \
+# apt-get is used for Debian-based images
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
-    bluez-deprecated \
-    bluez-libs \
     dbus \
-    dbus-glib \
-    build-base \
-    glib \
-    linux-headers \
-    libffi-dev \
-    openssl-dev \
-    libusb-dev
+    && rm -rf /var/lib/apt/lists/*
 
-# Optional: für einige Python-Builds (z. B. protobuf)
-RUN apk add --no-cache py3-pip
+# 1. Nur die requirements kopieren (für optimales Docker-Caching)
+COPY requirements.txt .
 
+# 2. Python dependencies installieren
+RUN pip install --upgrade pip --no-cache-dir && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
-COPY . /app
-
-# Install Python dependencies
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+# 3. Erst jetzt den eigentlichen Code kopieren
+COPY . .
 
 # Set default command
 CMD ["python", "gardena.py"]

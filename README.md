@@ -1,121 +1,74 @@
-# Gardena BLE Automower MQTT Bridge
+# Gardena BLE to MQTT Bridge (Sileno Minimo)
 
-Library to retrieve all data from Gardena automower via Bluetooth to MQTT.
-The Library is based on the AutomowerBLE library https://github.com/alistair23/AutoMower-BLE.
+A robust, highly optimized Python service to bridge Gardena Automowers (like the Sileno Minimo) via Bluetooth Low Energy (BLE) to an MQTT broker. Fully integrated with **Home Assistant Auto-Discovery**.
 
+Based on the [AutoMower-BLE](https://github.com/alistair23/AutoMower-BLE) library by alistair23.
 
+## ✨ Key Features
+* **Home Assistant Auto-Discovery:** Connects once, and your mower automatically appears in HA with all sensors (Battery, Activity, Next Start, Statistics) and controls (Start, Pause, Park).
+* **Smart Polling (Connect-on-Demand):** To protect the mower's battery and prevent Linux Bluetooth crashes, this script does NOT keep a constant connection open. It connects, reads data, and disconnects immediately. (60s intervals while mowing, 15m while parked).
+* **Auto-Recovery:** Catches `BlueZ` zombie connections and library crashes gracefully without bringing down the service.
+* **Fully Dockerized:** Includes a highly optimized, lightweight Debian-slim Dockerfile.
 
-This Python script connects via Bluetooth Low Energy (BLE) to a Husqvarna Gardena Automower and regularly transmits status data via MQTT to a broker (e.g., for Home Assistant or other automation systems).
+## ⚙️ Configuration (`cfg.ini`)
+Create a file named `cfg.ini` in the root directory (you can use `cfg.example.ini` as a template):
 
-## 🔧 Requirements
+```ini
+[mower]
+address = 84:72:93:94:B6:4C  # Your mower's Bluetooth MAC address
+pin = 1234                   # Your Gardena PIN
 
-- Python 3.8+
-- Bluetooth adapter (e.g., Raspberry Pi with Bluetooth)
-- Supported Gardena Automower (with BLE)
-- MQTT broker
+[mqtt]
+broker = 192.168.1.100       # MQTT Broker IP
+port = 1883
+topic = gardena/automower/status
+topic_cmd = gardena/automower/cmd
 
-## 📦 Installation
-
+[system]
+log_level = INFO             # DEBUG, INFO, WARNING, ERROR
+poll_active = 60             # Polling interval while mowing (seconds)
+poll_idle = 900              # Polling interval while parked (seconds)
+poll_error = 30              # Timeout after a Bluetooth error (seconds)
+```
+## 🐳 Installation (Docker - Recommended)
+Since the container needs access to the host's Bluetooth hardware, you must mount the dbus and run it in privileged/host-network mode.
 ```bash
-git clone https://github.com/dein-benutzer/bt_gardena_sileno_minimo.git
+docker build -t gardena-mqtt-bridge .
+
+docker run -d \
+  --name gardena_mower \
+  --net=host \
+  --privileged \
+  -v /var/run/dbus:/var/run/dbus \
+  -v $(pwd)/cfg.ini:/app/cfg.ini \
+  gardena-mqtt-bridge
+  ```
+  (Tip: We mount cfg.ini externally so you can change settings without rebuilding the container).
+
+  ## 🐍 Installation (Bare Metal / systemd)
+
+  ```bash
+  git clone <your-repo-url>
 cd bt_gardena_sileno_minimo
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-```
-
-## ⚙️ Configuration
-
-Create a configuration file `config.yaml` or adjust it accordingly. It should have a structure like the following:
-
-```yaml
-mqtt:
-  broker: 192.168.178.10
-  port: 1883
-  topic: gardena/status
-  topic_cmd: gardena/cmd
-
-mower:
-  address: 'XX:XX:XX:XX:XX:XX'  # Bluetooth MAC address of the mower
-  pin: 1234
-```
-
-## ▶️ Running
-
-```bash
 python gardena.py
 ```
 
-The script connects to the mower, regularly reads status data (battery level, activity, charging status, etc.) and sends this as JSON via MQTT.
+## 🛠 Troubleshooting: Bluetooth Pairing
+Gardena mowers require an OS-level confirmation for the very first pairing.
 
-## 🧪 Example MQTT Message
+1. Turn off Bluetooth on your smartphone.
 
-```json
-{
-  "Model": "GARDENA SILENO minimo",
-  "Manufacturer": "Husqvarna",
-  "MowerActivity": "PAUSED",
-  "SerialNumber": "123456789",
-  "IsCharging": true,
-  "BatteryLevel": 85,
-  "Next start time": "2025-05-19 18:00:00",
-  "MowerStateResponse": "PARKED"
-}
-```
+2. Restart your mower (OFF for 5s, then ON). It is now in pairing mode for 3 minutes.
 
-## Pairing issues
+3. Open a terminal on your Pi and run sudo bluetoothctl.
 
-### Troubleshooting: `[org.bluez.Error.AuthenticationFailed]` on Linux (Raspberry Pi)
+4. Type: power on -> agent NoInputNoOutput -> default-agent.
 
-When running this script on a Linux environment (like a Raspberry Pi), you might encounter the following error during the first connection attempt:
-`[org.bluez.Error.AuthenticationFailed] Authentication Failed`
-
-**Why does this happen?**
-The `automower-ble` library handles the PIN authentication internally via GATT characteristics. However, the Linux Bluetooth stack (BlueZ) intercepts the initial pairing request and blocks it because it expects an OS-level confirmation (a default agent), which the Python script cannot provide. 
-
-**The Workaround (One-Time Setup)**
-We need to temporarily start a background agent that automatically accepts the OS-level pairing request. You will need two SSH/Terminal windows for this.
-
-**Step 1: Clear the Bluetooth cache (Optional but recommended)**
-If you already tried connecting and failed, tell Linux to forget the mower first:
-```bash
-sudo bluetoothctl remove <YOUR_MOWER_MAC_ADDRESS>
-```
-
-**Step 2: Start the Auto-Accept Agent (Terminal 1)**
-Open your first terminal and start the Bluetooth control tool:
-
-```bash
-sudo bluetoothctl
-```
-Inside the [bluetooth]# prompt, type the following commands:
-
-```bash
-power on
-agent NoInputNoOutput
-default-agent
-```
-Important: Leave this terminal window open! This agent is now running in the background and will automatically say "Yes" to any OS-level connection requests.
-
-**Step 3: Prepare the Mower**
-
-Turn off Bluetooth on your smartphone to prevent the Gardena App from interfering.
-
-Turn your mower OFF, wait 5 seconds, and turn it ON again.
-
-The mower is now in pairing mode for exactly 3 minutes.
-
-**Step 4: Start the Script (Terminal 2)**
-Open a second terminal window, activate your virtual environment, and run the script:
-
-```bash
-python gardena.py
-```
-## 🛠 Notes
-
-- You can adjust the logging level in `gardena.py`.
-- The connection runs over BLE – the mower must be in range and active.
+5. Leave this terminal open! Start the python script in a second terminal. The agent will auto-accept the pairing request.
 
 ## 📄 License
 
-MIT License – see `LICENSE`
+MIT License – see LICENSE
