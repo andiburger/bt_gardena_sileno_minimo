@@ -26,6 +26,8 @@ m = None
 port = None
 topic = None
 topic_cmd = None
+pin = None
+client = None
 error_counter = 0
 
 # Generate a Client ID
