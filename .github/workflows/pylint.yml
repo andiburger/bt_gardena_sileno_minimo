@@ -10,7 +10,7 @@ jobs:
         # Ich habe Python 3.11 und 3.12 ergänzt, da dein Dockerfile 3.12 nutzt!
         python-version: ["3.10", "3.11", "3.12"] 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5 # Update auf v5 (neueste Version)
