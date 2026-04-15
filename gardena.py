@@ -84,6 +84,7 @@ class GardenaMQTTBridge:
                 "MQTT broker address and port must be set before connecting."
             )
         self.client.connect(broker, port)
+        self.client.loop_start()  # Start the MQTT client loop in a separate thread
 
     def stop(self):
         """Stops the MQTT client loop and disconnects."""
@@ -587,8 +588,6 @@ if __name__ == "__main__":
 
     bridge = GardenaMQTTBridge(result)
     bridge.connect_mqtt()
-    client = bridge.client
-    client.loop_start()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
