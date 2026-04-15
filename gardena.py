@@ -27,11 +27,10 @@ port = None
 topic = None
 topic_cmd = None
 pin = None
-client = None
 error_counter = 0
 
 # Generate a Client ID
-client_id = f"publish-{random.randint(0, 1000)}"
+# client_id = f"publish-{random.randint(0, 1000)}"
 msg = {}
 
 # Flags and Locks for the Smart Polling Architecture
@@ -40,253 +39,274 @@ mower_static_info = {}
 ble_lock = asyncio.Lock()  # Prevents simultaneous Bluetooth commands/polling
 
 
-def connect_mqtt():
+class GardenaMQTTBridge:
     """
-    Connects to the MQTT broker and sets up callbacks for connection and message handling.
+    Main class for the Gardena MQTT Bridge. Handles MQTT connection, command processing,
+    and mower data polling.
     """
 
-    def on_connect(client, userdata, flags, reason_code, properties):
-        if reason_code == 0:
-            logger.info("Connected to MQTT Broker!")
-            if topic_cmd:
-                client.subscribe(topic_cmd)
-                logger.info(f"Subscribed to command topic: {topic_cmd}")
+    def __init__(self, config: dict):
+        self.config = config
+        self.broker = config["mqtt"]["broker"]
+        self.port = int(config["mqtt"]["port"])
+        self.topic = config["mqtt"]["topic"]
+        self.topic_cmd = config["mqtt"]["topic_cmd"]
+        self.client_id = f"publish-{random.randint(0, 1000)}"
+
+    def connect_mqtt(self):
+        """
+        Connects to the MQTT broker and sets up callbacks for connection and message handling.
+        """
+
+        def on_connect(client, userdata, flags, reason_code, properties):
+            if reason_code == 0:
+                logger.info("Connected to MQTT Broker!")
+                if self.topic_cmd:
+                    client.subscribe(self.topic_cmd)
+                    logger.info(f"Subscribed to command topic: {self.topic_cmd}")
+            else:
+                logger.error(f"Failed to connect, return code {reason_code}")
+
+        def on_message(client, userdata, incoming_msg):
+            payload = incoming_msg.payload.decode("utf-8")
+            logger.info(f"MQTT Command received: {payload}")
+            if loop and m:
+                # execute the command in the event loop to avoid blocking the MQTT thread
+                asyncio.run_coroutine_threadsafe(process_command(payload), loop)
+
+        self.client = mqtt_client.Client(
+            mqtt_client.CallbackAPIVersion.VERSION2, client_id=self.client_id
+        )
+        self.client.on_connect = on_connect
+        self.client.on_message = on_message
+        if broker is None or port is None:
+            raise ValueError(
+                "MQTT broker address and port must be set before connecting."
+            )
+        self.client.connect(broker, port)
+
+    def stop(self):
+        """Stops the MQTT client loop and disconnects."""
+        self.client.loop_stop()
+        self.client.disconnect()
+
+    def publish(self, client: mqtt_client.Client, msg_payload):
+        """Publishes a message to the MQTT state topic."""
+        if self.topic is None:
+            raise ValueError("MQTT topic must be set before publishing.")
+        # Using retain=True so Home Assistant always has the latest state upon reboot
+        result = client.publish(
+            self.topic, json.dumps(msg_payload, indent=4), retain=True
+        )
+        status = result[0]
+        if status == 0:
+            logger.info(f"Sent state payload to topic `{self.topic}`")
         else:
-            logger.error(f"Failed to connect, return code {reason_code}")
+            logger.error(f"Failed to send message to topic {self.topic}")
 
-    def on_message(client, userdata, incoming_msg):
-        payload = incoming_msg.payload.decode("utf-8")
-        logger.info(f"MQTT Command received: {payload}")
-        if loop and m:
-            # execute the command in the event loop to avoid blocking the MQTT thread
-            asyncio.run_coroutine_threadsafe(process_command(payload), loop)
+    def publish_discovery(
+        self,
+        client: mqtt_client.Client,
+        serial_number,
+        model,
+        manufacturer,
+        state_topic,
+        cmd_topic,
+    ):
+        """
+        Publishes Home Assistant Auto-Discovery configuration messages for the Gardena mower.
+        """
+        device_info = {
+            "identifiers": [f"gardena_{serial_number}"],
+            "name": "Sileno Minimo",
+            "manufacturer": manufacturer,
+            "model": model,
+        }
 
-    client = mqtt_client.Client(
-        mqtt_client.CallbackAPIVersion.VERSION2, client_id=client_id
-    )
-    client.on_connect = on_connect
-    client.on_message = on_message
-    if broker is None or port is None:
-        raise ValueError("MQTT broker address and port must be set before connecting.")
-    client.connect(broker, port)
-    return client
+        discovery_messages = [
+            # 1. Lawn Mower Entity
+            (
+                "lawn_mower/gardena_minimo/mower/config",
+                {
+                    "name": "Sileno Minimo",
+                    "unique_id": f"gardena_mower_{serial_number}",
+                    "activity_state_topic": state_topic,
+                    "activity_value_template": "{% if value_json.MowerActivity in ['2', '3', '4'] %} mowing {% elif value_json.MowerActivity == '5' %} docked {% elif value_json.MowerActivity == '7' %} error {% else %} paused {% endif %}",
+                    "start_mowing_command_topic": cmd_topic,
+                    "start_mowing_command_template": "START",
+                    "pause_command_topic": cmd_topic,
+                    "pause_command_template": "PAUSE",
+                    "dock_command_topic": cmd_topic,
+                    "dock_command_template": "PARK",
+                    "device": device_info,
+                },
+            ),
+            # 2. Detailed Status Sensor
+            (
+                "sensor/gardena_minimo/detailstatus/config",
+                {
+                    "name": "Detailstatus",
+                    "unique_id": f"g_status_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
+                    "icon": "mdi:information-outline",
+                    "device": device_info,
+                },
+            ),
+            # 3. Battery Level Sensor
+            (
+                "sensor/gardena_minimo/battery/config",
+                {
+                    "name": "Akkustand",
+                    "unique_id": f"g_bat_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.BatteryLevel | int }}",
+                    "device_class": "battery",
+                    "unit_of_measurement": "%",
+                    "device": device_info,
+                },
+            ),
+            # 4. Charging Status Sensor
+            (
+                "binary_sensor/gardena_minimo/is_charging/config",
+                {
+                    "name": "Ladestatus",
+                    "unique_id": f"g_charging_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.IsCharging }}",
+                    "payload_on": "True",
+                    "payload_off": "False",
+                    "device_class": "battery_charging",
+                    "device": device_info,
+                },
+            ),
+            # 5. Next Start Sensor
+            (
+                "sensor/gardena_minimo/next_start/config",
+                {
+                    "name": "Nächster Start",
+                    "unique_id": f"g_nextstart_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json['Next start time'] }}",
+                    "icon": "mdi:calendar-clock",
+                    "device": device_info,
+                },
+            ),
+            # 6. Blade Usage Sensor
+            (
+                "sensor/gardena_minimo/blade_usage/config",
+                {
+                    "name": "Messerlaufzeit",
+                    "unique_id": f"g_blade_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ (value_json.cuttingBladeUsageTime / 3600) | round(2) }}",
+                    "unit_of_measurement": "h",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:saw-blade",
+                    "device": device_info,
+                },
+            ),
+            # 7. Total Running Time Sensor
+            (
+                "sensor/gardena_minimo/total_running/config",
+                {
+                    "name": "Gesamte Betriebszeit",
+                    "unique_id": f"g_running_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ (value_json.totalRunningTime / 3600) | round(2) }}",
+                    "unit_of_measurement": "h",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:clock-outline",
+                    "device": device_info,
+                },
+            ),
+            # 8. Pure Mowing Time Sensor
+            (
+                "sensor/gardena_minimo/total_cutting/config",
+                {
+                    "name": "Reine Mähzeit",
+                    "unique_id": f"g_cutting_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ (value_json.totalCuttingTime / 3600) | round(2) }}",
+                    "unit_of_measurement": "h",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:grass",
+                    "device": device_info,
+                },
+            ),
+            # 9. Searching Time Sensor
+            (
+                "sensor/gardena_minimo/total_searching/config",
+                {
+                    "name": "Suchzeit",
+                    "unique_id": f"g_searching_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ (value_json.totalSearchingTime / 3600) | round(2) }}",
+                    "unit_of_measurement": "h",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:radar",
+                    "device": device_info,
+                },
+            ),
+            # 10. Total Charging Time Sensor
+            (
+                "sensor/gardena_minimo/total_charging/config",
+                {
+                    "name": "Gesamte Ladezeit",
+                    "unique_id": f"g_totalcharge_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ (value_json.totalChargingTime / 3600) | round(2) }}",
+                    "unit_of_measurement": "h",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:battery-clock",
+                    "device": device_info,
+                },
+            ),
+            # 11. Charge Cycles Sensor
+            (
+                "sensor/gardena_minimo/charge_cycles/config",
+                {
+                    "name": "Ladezyklen",
+                    "unique_id": f"g_cycles_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.numberOfChargingCycles | int }}",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:battery-sync",
+                    "device": device_info,
+                },
+            ),
+            # 12. Collisions Sensor
+            (
+                "sensor/gardena_minimo/collisions/config",
+                {
+                    "name": "Kollisionen",
+                    "unique_id": f"g_collisions_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.numberOfCollisions | int }}",
+                    "state_class": "total_increasing",
+                    "icon": "mdi:car-bumper",
+                    "device": device_info,
+                },
+            ),
+            # 13. Gardena Activity Raw Sensor
+            (
+                "sensor/gardena_minimo/activity_raw/config",
+                {
+                    "name": "Activity Raw",
+                    "unique_id": f"g_act_raw_{serial_number}",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.MowerActivity | replace('MowerActivity.', '') }}",
+                    "icon": "mdi:code-json",
+                    "device": device_info,
+                },
+            ),
+        ]
 
+        for topic_suffix, payload in discovery_messages:
+            full_topic = f"homeassistant/{topic_suffix}"
+            client.publish(full_topic, json.dumps(payload), retain=True)
 
-def publish(client: mqtt_client.Client, msg_payload):
-    """Publishes a message to the MQTT state topic."""
-    if topic is None:
-        raise ValueError("MQTT topic must be set before publishing.")
-    # Using retain=True so Home Assistant always has the latest state upon reboot
-    result = client.publish(topic, json.dumps(msg_payload, indent=4), retain=True)
-    status = result[0]
-    if status == 0:
-        logger.info(f"Sent state payload to topic `{topic}`")
-    else:
-        logger.error(f"Failed to send message to topic {topic}")
-
-
-def publish_discovery(
-    client: mqtt_client.Client,
-    serial_number,
-    model,
-    manufacturer,
-    state_topic,
-    cmd_topic,
-):
-    """
-    Publishes Home Assistant Auto-Discovery configuration messages for the Gardena mower.
-    """
-    device_info = {
-        "identifiers": [f"gardena_{serial_number}"],
-        "name": "Sileno Minimo",
-        "manufacturer": manufacturer,
-        "model": model,
-    }
-
-    discovery_messages = [
-        # 1. Lawn Mower Entity
-        (
-            "lawn_mower/gardena_minimo/mower/config",
-            {
-                "name": "Sileno Minimo",
-                "unique_id": f"gardena_mower_{serial_number}",
-                "activity_state_topic": state_topic,
-                "activity_value_template": "{% if value_json.MowerActivity in ['2', '3', '4'] %} mowing {% elif value_json.MowerActivity == '5' %} docked {% elif value_json.MowerActivity == '7' %} error {% else %} paused {% endif %}",
-                "start_mowing_command_topic": cmd_topic,
-                "start_mowing_command_template": "START",
-                "pause_command_topic": cmd_topic,
-                "pause_command_template": "PAUSE",
-                "dock_command_topic": cmd_topic,
-                "dock_command_template": "PARK",
-                "device": device_info,
-            },
-        ),
-        # 2. Detailed Status Sensor
-        (
-            "sensor/gardena_minimo/detailstatus/config",
-            {
-                "name": "Detailstatus",
-                "unique_id": f"g_status_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
-                "icon": "mdi:information-outline",
-                "device": device_info,
-            },
-        ),
-        # 3. Battery Level Sensor
-        (
-            "sensor/gardena_minimo/battery/config",
-            {
-                "name": "Akkustand",
-                "unique_id": f"g_bat_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json.BatteryLevel | int }}",
-                "device_class": "battery",
-                "unit_of_measurement": "%",
-                "device": device_info,
-            },
-        ),
-        # 4. Charging Status Sensor
-        (
-            "binary_sensor/gardena_minimo/is_charging/config",
-            {
-                "name": "Ladestatus",
-                "unique_id": f"g_charging_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json.IsCharging }}",
-                "payload_on": "True",
-                "payload_off": "False",
-                "device_class": "battery_charging",
-                "device": device_info,
-            },
-        ),
-        # 5. Next Start Sensor
-        (
-            "sensor/gardena_minimo/next_start/config",
-            {
-                "name": "Nächster Start",
-                "unique_id": f"g_nextstart_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json['Next start time'] }}",
-                "icon": "mdi:calendar-clock",
-                "device": device_info,
-            },
-        ),
-        # 6. Blade Usage Sensor
-        (
-            "sensor/gardena_minimo/blade_usage/config",
-            {
-                "name": "Messerlaufzeit",
-                "unique_id": f"g_blade_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ (value_json.cuttingBladeUsageTime / 3600) | round(2) }}",
-                "unit_of_measurement": "h",
-                "state_class": "total_increasing",
-                "icon": "mdi:saw-blade",
-                "device": device_info,
-            },
-        ),
-        # 7. Total Running Time Sensor
-        (
-            "sensor/gardena_minimo/total_running/config",
-            {
-                "name": "Gesamte Betriebszeit",
-                "unique_id": f"g_running_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ (value_json.totalRunningTime / 3600) | round(2) }}",
-                "unit_of_measurement": "h",
-                "state_class": "total_increasing",
-                "icon": "mdi:clock-outline",
-                "device": device_info,
-            },
-        ),
-        # 8. Pure Mowing Time Sensor
-        (
-            "sensor/gardena_minimo/total_cutting/config",
-            {
-                "name": "Reine Mähzeit",
-                "unique_id": f"g_cutting_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ (value_json.totalCuttingTime / 3600) | round(2) }}",
-                "unit_of_measurement": "h",
-                "state_class": "total_increasing",
-                "icon": "mdi:grass",
-                "device": device_info,
-            },
-        ),
-        # 9. Searching Time Sensor
-        (
-            "sensor/gardena_minimo/total_searching/config",
-            {
-                "name": "Suchzeit",
-                "unique_id": f"g_searching_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ (value_json.totalSearchingTime / 3600) | round(2) }}",
-                "unit_of_measurement": "h",
-                "state_class": "total_increasing",
-                "icon": "mdi:radar",
-                "device": device_info,
-            },
-        ),
-        # 10. Total Charging Time Sensor
-        (
-            "sensor/gardena_minimo/total_charging/config",
-            {
-                "name": "Gesamte Ladezeit",
-                "unique_id": f"g_totalcharge_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ (value_json.totalChargingTime / 3600) | round(2) }}",
-                "unit_of_measurement": "h",
-                "state_class": "total_increasing",
-                "icon": "mdi:battery-clock",
-                "device": device_info,
-            },
-        ),
-        # 11. Charge Cycles Sensor
-        (
-            "sensor/gardena_minimo/charge_cycles/config",
-            {
-                "name": "Ladezyklen",
-                "unique_id": f"g_cycles_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json.numberOfChargingCycles | int }}",
-                "state_class": "total_increasing",
-                "icon": "mdi:battery-sync",
-                "device": device_info,
-            },
-        ),
-        # 12. Collisions Sensor
-        (
-            "sensor/gardena_minimo/collisions/config",
-            {
-                "name": "Kollisionen",
-                "unique_id": f"g_collisions_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json.numberOfCollisions | int }}",
-                "state_class": "total_increasing",
-                "icon": "mdi:car-bumper",
-                "device": device_info,
-            },
-        ),
-        # 13. Gardena Activity Raw Sensor
-        (
-            "sensor/gardena_minimo/activity_raw/config",
-            {
-                "name": "Activity Raw",
-                "unique_id": f"g_act_raw_{serial_number}",
-                "state_topic": state_topic,
-                "value_template": "{{ value_json.MowerActivity | replace('MowerActivity.', '') }}",
-                "icon": "mdi:code-json",
-                "device": device_info,
-            },
-        ),
-    ]
-
-    for topic_suffix, payload in discovery_messages:
-        full_topic = f"homeassistant/{topic_suffix}"
-        client.publish(full_topic, json.dumps(payload), retain=True)
-
-    logger.info("Auto-Discovery Setup successfully sent to Home Assistant!")
+        logger.info("Auto-Discovery Setup successfully sent to Home Assistant!")
 
 
 async def process_command(payload):
@@ -565,7 +585,9 @@ if __name__ == "__main__":
     address = result["mower"]["address"]
     pin = int(result["mower"]["pin"])
 
-    client = connect_mqtt()
+    bridge = GardenaMQTTBridge(result)
+    bridge.connect_mqtt()
+    client = bridge.client
     client.loop_start()
 
     loop = asyncio.new_event_loop()
@@ -573,8 +595,7 @@ if __name__ == "__main__":
 
     def shutdown_handler(sig, frame):
         logger.info("Received stop signal (SIGTERM/SIGINT). Shutting down safely...")
-        client.loop_stop()
-        client.disconnect()
+        bridge.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown_handler)  # Handle Ctrl+C gracefully
