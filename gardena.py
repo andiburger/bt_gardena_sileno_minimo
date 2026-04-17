@@ -646,7 +646,6 @@ if __name__ == "__main__":
         logger.error(f"Fatal error: {e}")
     finally:
         # Fallback Cleanup
-        client.loop_stop()
-        client.disconnect()
+        bridge.stop()
         if not loop.is_closed():
             loop.close()
