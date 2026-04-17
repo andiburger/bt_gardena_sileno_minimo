@@ -7,6 +7,7 @@ Author: __ABu__ / Refactored
 
 from automower_ble import mower
 from bleak import BleakScanner
+from datetime import datetime
 import asyncio
 import random
 import json
@@ -547,9 +548,46 @@ async def main_loop(config: dict):
                 sleep_time = 120
                 logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
             else:
+                # Default to idle sleep time
                 sleep_time = config["system"]["poll_idle"]
-                logger.info(f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds.")
 
+                # check if we have a valid next start time to potentially shorten the sleep interval
+                next_start_str = msg.get("Next start time", "None")
+                if next_start_str != "None":
+                    try:
+                        # Parse the next start time from the payload
+                        next_start = datetime.strptime(
+                            next_start_str, "%Y-%m-%d %H:%M:%S"
+                        )
+                        now = datetime.now()
+
+                        # Calculate the time difference in seconds
+                        time_to_start = (next_start - now).total_seconds()
+
+                        # If the mower is scheduled to start within the next 'sleep_time' seconds, we adjust the sleep time to wake up shortly before the mower starts.
+                        if 0 < time_to_start < sleep_time:
+                            # We want to wake up a bit before the mower starts to ensure we catch the active state as soon as it happens, but we also don't want to wake up too early.
+                            # Here we choose to wake up 60 seconds before the scheduled start time, or at the configured active poll interval, whichever is longer, to ensure we are in the right state to catch the mower starting.
+                            sleep_time = max(
+                                time_to_start - 60, config["system"]["poll_active"]
+                            )
+                            logger.info(
+                                f"Mower starts soon. Adjusting sleep to {sleep_time:.0f} seconds to wake up preemptively."
+                            )
+                        else:
+                            logger.info(
+                                f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
+                            )
+
+                    except Exception as e:
+                        logger.debug(f"Could not calculate preemptive wakeup: {e}")
+                        logger.info(
+                            f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
+                        )
+                else:
+                    logger.info(
+                        f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
+                    )
             await asyncio.sleep(sleep_time)
 
         except Exception as e:
