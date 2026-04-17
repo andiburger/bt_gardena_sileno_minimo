@@ -92,12 +92,12 @@ class GardenaMQTTBridge:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish(self, client: mqtt_client.Client, msg_payload):
+    def publish(self, msg_payload):
         """Publishes a message to the MQTT state topic."""
         if self.topic is None:
             raise ValueError("MQTT topic must be set before publishing.")
         # Using retain=True so Home Assistant always has the latest state upon reboot
-        result = client.publish(
+        result = self.client.publish(
             self.topic, json.dumps(msg_payload, indent=4), retain=True
         )
         status = result[0]
@@ -108,7 +108,6 @@ class GardenaMQTTBridge:
 
     def publish_discovery(
         self,
-        client: mqtt_client.Client,
         serial_number,
         model,
         manufacturer,
@@ -306,7 +305,7 @@ class GardenaMQTTBridge:
 
         for topic_suffix, payload in discovery_messages:
             full_topic = f"homeassistant/{topic_suffix}"
-            client.publish(full_topic, json.dumps(payload), retain=True)
+            self.client.publish(full_topic, json.dumps(payload), retain=True)
 
         logger.info("Auto-Discovery Setup successfully sent to Home Assistant!")
 
@@ -423,7 +422,7 @@ async def process_command(payload):
                     )
 
 
-async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
+async def poll_mower_data(m: mower.Mower, bridge: GardenaMQTTBridge):
     """
     Connects to the mower, reads all data matching the exact Home Assistant
     JSON schema, sends the payload, and disconnects immediately.
@@ -459,8 +458,8 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
                 }
 
                 if not discovery_sent:
-                    publish_discovery(
-                        client, serial_num, str(model), manufacturer, topic, topic_cmd
+                    bridge.publish_discovery(
+                        serial_num, str(model), manufacturer, topic, topic_cmd
                     )
                     discovery_sent = True
 
@@ -512,7 +511,7 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
                 logger.warning(f"Could not fetch extended statistics: {stat_err}")
 
             # Send exactly formatted JSON to MQTT
-            publish(client, msg)
+            bridge.publish(msg)
 
             return str(activity)
 
@@ -526,7 +525,7 @@ async def poll_mower_data(m: mower.Mower, client: mqtt_client.Client):
                     )
 
 
-async def main_loop(config: dict):
+async def main_loop(config: dict, bridge: GardenaMQTTBridge):
     """
     Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
     """
@@ -538,7 +537,7 @@ async def main_loop(config: dict):
             m = mower.Mower(random.randint(100000000, 999999999), address, pin)
 
             # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
-            activity = await poll_mower_data(m, client)
+            activity = await poll_mower_data(m, bridge)
             error_counter = 0  # Reset error counter after a successful cycle
             # --- Smart Polling Interval Logic ---
             if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
@@ -641,7 +640,7 @@ if __name__ == "__main__":
     )  # Handle docker stop or system shutdown gracefully
 
     try:
-        loop.run_until_complete(main_loop(result["system"]))
+        loop.run_until_complete(main_loop(result["system"], bridge=bridge))
     except Exception as e:
         logger.error(f"Fatal error: {e}")
     finally:
