@@ -23,16 +23,10 @@ logger = logging.getLogger(__name__)
 loop = None
 broker = None
 address = None
-m = None
+# m = None
 port = None
-topic = None
-topic_cmd = None
 pin = None
 error_counter = 0
-
-# Generate a Client ID
-# client_id = f"publish-{random.randint(0, 1000)}"
-msg = {}
 
 # Flags and Locks for the Smart Polling Architecture
 discovery_sent = False
@@ -310,291 +304,322 @@ class GardenaMQTTBridge:
         logger.info("Auto-Discovery Setup successfully sent to Home Assistant!")
 
 
-async def process_command(payload):
+class LawnMowerEntity:
     """
-    Safely processes incoming commands (Start, Pause, Park, Schedule).
-    Implements Connect-on-Demand to avoid interrupting the deep sleep.
+    Represents the main Lawn Mower entity in Home Assistant. This class is responsible for
+    processing commands and updating the mower's state based on the received MQTT messages.
     """
-    if payload.startswith("ADD_TASK:"):
-        try:
-            _, params = payload.split(":")
-            p = params.split(",")
-            day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
-            if (
-                not (0 <= day_idx <= 6)
-                or not (0 <= h <= 23)
-                or not (0 <= m_start <= 59)
-                or dur <= 0
-            ):
+
+    def __init__(self, name, address, pin, bridge: GardenaMQTTBridge, config):
+        """
+        Initializes the Lawn Mower entity with the given parameters.
+        param name: The name of the mower entity.
+        param address: The Bluetooth address of the mower.
+        param pin: The PIN code for Bluetooth pairing.
+        param bridge: The MQTT bridge instance for communication.
+        param config: The configuration dictionary for the system.
+        """
+        self.name = name
+        self.address = address
+        self.pin = pin
+        self.bridge = bridge
+        self.config = config
+        self.msg_state = {}
+        self.static_info = {}
+        self.discovery_sent = False
+        self.error_counter = 0
+        # instance of the mower will be created on demand in the command processing to ensure a clean state for each connection
+        self.m = mower.Mower(random.randint(100000000, 999999999), address, pin)
+
+    async def process_command(self, payload):
+        """
+        Safely processes incoming commands (Start, Pause, Park, Schedule).
+        Implements Connect-on-Demand to avoid interrupting the deep sleep.
+        """
+        if payload.startswith("ADD_TASK:"):
+            try:
+                _, params = payload.split(":")
+                p = params.split(",")
+                day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+                if (
+                    not (0 <= day_idx <= 6)
+                    or not (0 <= h <= 23)
+                    or not (0 <= m_start <= 59)
+                    or dur <= 0
+                ):
+                    logger.error(
+                        f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
+                    )
+                    return
+            except ValueError:
                 logger.error(
-                    f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
+                    f"Invalid payload format (non-numeric values detected): {payload}"
                 )
                 return
-        except ValueError:
-            logger.error(
-                f"Invalid payload format (non-numeric values detected): {payload}"
-            )
-            return
 
-    # Request the Bluetooth lock to ensure no polling interferes
-    async with ble_lock:
-        try:
-            logger.info("Command execution: Scanning for mower...")
-            device = await BleakScanner.find_device_by_address(address)
-            if not device:
-                logger.error("Command failed: Mower not found in Bluetooth range.")
-                return
-
-            await asyncio.wait_for(m.connect(device), timeout=15.0)
-            await asyncio.sleep(
-                1.0
-            )  # Short delay to ensure connection stability before sending commands
-
-            if payload == "START":
-                logger.info("Sending Override (Immediate start for 3 hours)...")
-                await m.mower_override()
-            elif payload == "PAUSE":
-                logger.info("Sending Pause command...")
-                await m.command("Pause")
-            elif payload == "PARK":
-                logger.info("Sending Park command (Until next schedule)...")
-                await m.mower_park()
-            elif payload == "CLEAR_ALL_SCHEDULES":
-                logger.info("Starting transaction to clear all tasks...")
-                transaction_open = False
-                try:
-                    await asyncio.wait_for(
-                        m.command("StartTaskTransaction"), timeout=10.0
-                    )
-                    transaction_open = True
-                    await asyncio.wait_for(m.command("DeleteAllTasks"), timeout=10.0)
-                    await asyncio.wait_for(
-                        m.command("CommitTaskTransaction"), timeout=15.0
-                    )
-                    transaction_open = False
-                    logger.info("All tasks deleted and transaction committed.")
-                except asyncio.TimeoutError:
-                    if transaction_open:
-                        logger.warning(
-                            "CRITICAL: Timeout with an open transaction! Mower might block briefly."
-                        )
-            elif payload.startswith("ADD_TASK:"):
-                logger.info(
-                    f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min"
-                )
-                transaction_open = False
-                try:
-                    await asyncio.wait_for(
-                        m.command("StartTaskTransaction"), timeout=10.0
-                    )
-                    transaction_open = True
-                    await asyncio.wait_for(
-                        m.command(
-                            "AddTask",
-                            day=day_idx,
-                            start_h=h,
-                            start_m=m_start,
-                            duration_m=dur,
-                        ),
-                        timeout=10.0,
-                    )
-                    await asyncio.wait_for(
-                        m.command("CommitTaskTransaction"), timeout=15.0
-                    )
-                    transaction_open = False
-                    logger.info("Task added and transaction committed successfully.")
-                except asyncio.TimeoutError:
-                    if transaction_open:
-                        logger.warning(
-                            "CRITICAL: Timeout during an open transaction! Subsequent commands might fail temporarily."
-                        )
-
-        except Exception as e:
-            logger.error(f"Error processing command {payload}: {e}")
-        finally:
-            # Always disconnect after a command to free up BlueZ
-            if hasattr(m, "disconnect"):
-                try:
-                    await m.disconnect()
-                except Exception as clean_err:
-                    logger.debug(
-                        f"Ignored cleanup error in process_command: {clean_err}"
-                    )
-
-
-async def poll_mower_data(m: mower.Mower, bridge: GardenaMQTTBridge):
-    """
-    Connects to the mower, reads all data matching the exact Home Assistant
-    JSON schema, sends the payload, and disconnects immediately.
-    """
-    global discovery_sent, mower_static_info
-
-    # Request the Bluetooth lock to ensure no commands interfere
-    async with ble_lock:
-        device = await BleakScanner.find_device_by_address(m.address)
-        if device is None:
-            return "NOT_FOUND"
-
-        try:
-            await asyncio.wait_for(m.connect(device), timeout=15.0)
-            await asyncio.sleep(
-                1.0
-            )  # Short delay to ensure connection stability before sending commands
-
-            # 1. Fetch Static Info & Run HA Discovery (Only Once!)
-            if not mower_static_info:
-                model = await m.get_model()
-                manufacturer = await m.get_manufacturer()
-                serial_num = await m.command("GetSerialNumber")
-
-                mower_static_info = {
-                    "Model": str(model),
-                    "Manufacturer": str(manufacturer),
-                    "SerialNumber": (
-                        int(serial_num)
-                        if str(serial_num).isdigit()
-                        else str(serial_num)
-                    ),
-                }
-
-                if not discovery_sent:
-                    bridge.publish_discovery(
-                        serial_num, str(model), manufacturer, topic, topic_cmd
-                    )
-                    discovery_sent = True
-
-            # Clear previous dynamic data and load static info
-            msg.clear()
-            msg.update(mower_static_info)
-
-            # 2. Fetch Core Operational Data
-            activity = await m.mower_activity()
-            state = await m.mower_state()
-            battery = await m.battery_level()
-            is_charging = await m.is_charging()  # Using your native function!
-
-            msg.update(
-                {
-                    "MowerActivity": str(activity),
-                    "MowerStateResponse": str(state),
-                    "IsCharging": is_charging,
-                    "BatteryLevel": battery,
-                }
-            )
-
-            # 3. Fetch Next Scheduled Start Time
+        # Request the Bluetooth lock to ensure no polling interferes
+        async with ble_lock:
             try:
-                next_start_time = (
-                    await m.mower_next_start_time()
-                )  # Using your native function!
-                if next_start_time:
-                    msg.update(
-                        {
-                            "Next start time": next_start_time.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
-                        }
-                    )
-                else:
-                    msg.update({"Next start time": "None"})
-            except Exception as time_err:
-                logger.debug(f"Could not fetch next start time: {time_err}")
+                logger.info("Command execution: Scanning for mower...")
+                device = await BleakScanner.find_device_by_address(self.address)
+                if not device:
+                    logger.error("Command failed: Mower not found in Bluetooth range.")
+                    return
 
-            # 4. Fetch All Statistics (Running Time, Collisions, etc.)
-            try:
-                statuses = await m.command("GetAllStatistics")
-                if isinstance(statuses, dict):
-                    # We inject the exact keys like 'totalRunningTime' into our payload
-                    for status, value in statuses.items():
-                        msg.update({str(status): value})
-            except Exception as stat_err:
-                logger.warning(f"Could not fetch extended statistics: {stat_err}")
+                await asyncio.wait_for(self.m.connect(device), timeout=15.0)
+                await asyncio.sleep(
+                    1.0
+                )  # Short delay to ensure connection stability before sending commands
 
-            # Send exactly formatted JSON to MQTT
-            bridge.publish(msg)
-
-            return str(activity)
-
-        finally:
-            if hasattr(m, "disconnect"):
-                try:
-                    await m.disconnect()
-                except Exception as clean_err:
-                    logger.debug(
-                        f"Ignored cleanup error in poll_mower_data: {clean_err}"
-                    )
-
-
-async def main_loop(config: dict, bridge: GardenaMQTTBridge):
-    """
-    Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
-    """
-    global error_counter, m
-
-    while True:
-        try:
-            # Create a new mower instance for each connection attempt to ensure a clean state
-            m = mower.Mower(random.randint(100000000, 999999999), address, pin)
-
-            # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
-            activity = await poll_mower_data(m, bridge)
-            error_counter = 0  # Reset error counter after a successful cycle
-            # --- Smart Polling Interval Logic ---
-            if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
-                sleep_time = config["system"]["poll_active"]
-                logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
-            elif activity == "NOT_FOUND":
-                sleep_time = 120
-                logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
-            else:
-                # Default to idle sleep time
-                sleep_time = config["system"]["poll_idle"]
-
-                # check if we have a valid next start time to potentially shorten the sleep interval
-                next_start_str = msg.get("Next start time", "None")
-                if next_start_str != "None":
+                if payload == "START":
+                    logger.info("Sending Override (Immediate start for 3 hours)...")
+                    await self.m.mower_override()
+                elif payload == "PAUSE":
+                    logger.info("Sending Pause command...")
+                    await self.m.command("Pause")
+                elif payload == "PARK":
+                    logger.info("Sending Park command (Until next schedule)...")
+                    await self.m.mower_park()
+                elif payload == "CLEAR_ALL_SCHEDULES":
+                    logger.info("Starting transaction to clear all tasks...")
+                    transaction_open = False
                     try:
-                        # Parse the next start time from the payload
-                        next_start = datetime.strptime(
-                            next_start_str, "%Y-%m-%d %H:%M:%S"
+                        await asyncio.wait_for(
+                            self.m.command("StartTaskTransaction"), timeout=10.0
                         )
-                        now = datetime.now()
-
-                        # Calculate the time difference in seconds
-                        time_to_start = (next_start - now).total_seconds()
-
-                        # If the mower is scheduled to start within the next 'sleep_time' seconds, we adjust the sleep time to wake up shortly before the mower starts.
-                        if 0 < time_to_start < sleep_time:
-                            # We want to wake up a bit before the mower starts to ensure we catch the active state as soon as it happens, but we also don't want to wake up too early.
-                            # Here we choose to wake up 60 seconds before the scheduled start time, or at the configured active poll interval, whichever is longer, to ensure we are in the right state to catch the mower starting.
-                            sleep_time = max(
-                                time_to_start - 60, config["system"]["poll_active"]
+                        transaction_open = True
+                        await asyncio.wait_for(
+                            self.m.command("DeleteAllTasks"), timeout=10.0
+                        )
+                        await asyncio.wait_for(
+                            self.m.command("CommitTaskTransaction"), timeout=15.0
+                        )
+                        transaction_open = False
+                        logger.info("All tasks deleted and transaction committed.")
+                    except asyncio.TimeoutError:
+                        if transaction_open:
+                            logger.warning(
+                                "CRITICAL: Timeout with an open transaction! Mower might block briefly."
                             )
-                            logger.info(
-                                f"Mower starts soon. Adjusting sleep to {sleep_time:.0f} seconds to wake up preemptively."
+                elif payload.startswith("ADD_TASK:"):
+                    logger.info(
+                        f"Adding Task: Day {day_idx} at {h}:{m_start} for {dur} min"
+                    )
+                    transaction_open = False
+                    try:
+                        await asyncio.wait_for(
+                            self.m.command("StartTaskTransaction"), timeout=10.0
+                        )
+                        transaction_open = True
+                        await asyncio.wait_for(
+                            self.m.command(
+                                "AddTask",
+                                day=day_idx,
+                                start_h=h,
+                                start_m=m_start,
+                                duration_m=dur,
+                            ),
+                            timeout=10.0,
+                        )
+                        await asyncio.wait_for(
+                            self.m.command("CommitTaskTransaction"), timeout=15.0
+                        )
+                        transaction_open = False
+                        logger.info(
+                            "Task added and transaction committed successfully."
+                        )
+                    except asyncio.TimeoutError:
+                        if transaction_open:
+                            logger.warning(
+                                "CRITICAL: Timeout during an open transaction! Subsequent commands might fail temporarily."
                             )
-                        else:
+
+            except Exception as e:
+                logger.error(f"Error processing command {payload}: {e}")
+            finally:
+                # Always disconnect after a command to free up BlueZ
+                if hasattr(self.m, "disconnect"):
+                    try:
+                        await self.m.disconnect()
+                    except Exception as clean_err:
+                        logger.debug(
+                            f"Ignored cleanup error in process_command: {clean_err}"
+                        )
+
+    async def poll_mower_data(self):
+        """
+        Connects to the mower, reads all data matching the exact Home Assistant
+        JSON schema, sends the payload, and disconnects immediately.
+        """
+        # Request the Bluetooth lock to ensure no commands interfere
+        async with ble_lock:
+            device = await BleakScanner.find_device_by_address(self.m.address)
+            if device is None:
+                return "NOT_FOUND"
+
+            try:
+                await asyncio.wait_for(self.m.connect(device), timeout=15.0)
+                await asyncio.sleep(
+                    1.0
+                )  # Short delay to ensure connection stability before sending commands
+
+                # 1. Fetch Static Info & Run HA Discovery (Only Once!)
+                if not self.static_info:
+                    model = await self.m.get_model()
+                    manufacturer = await self.m.get_manufacturer()
+                    serial_num = await self.m.command("GetSerialNumber")
+
+                    self.static_info = {
+                        "Model": str(model),
+                        "Manufacturer": str(manufacturer),
+                        "SerialNumber": (
+                            int(serial_num)
+                            if str(serial_num).isdigit()
+                            else str(serial_num)
+                        ),
+                    }
+
+                    if not self.discovery_sent:
+                        self.bridge.publish_discovery(
+                            serial_num,
+                            str(model),
+                            manufacturer,
+                            self.topic,
+                            self.topic_cmd,
+                        )
+                        self.discovery_sent = True
+
+                # Clear previous dynamic data and load static info
+                self.msg_state.clear()
+                self.msg_state.update(self.static_info)
+
+                # 2. Fetch Core Operational Data
+                activity = await self.m.mower_activity()
+                state = await self.m.mower_state()
+                battery = await self.m.battery_level()
+                is_charging = await self.m.is_charging()  # Using your native function!
+
+                self.msg_state.update(
+                    {
+                        "MowerActivity": str(activity),
+                        "MowerStateResponse": str(state),
+                        "IsCharging": is_charging,
+                        "BatteryLevel": battery,
+                    }
+                )
+
+                # 3. Fetch Next Scheduled Start Time
+                try:
+                    next_start_time = (
+                        await self.m.mower_next_start_time()
+                    )  # Using your native function!
+                    if next_start_time:
+                        self.msg_state.update(
+                            {
+                                "Next start time": next_start_time.strftime(
+                                    "%Y-%m-%d %H:%M:%S"
+                                )
+                            }
+                        )
+                    else:
+                        self.msg_state.update({"Next start time": "None"})
+                except Exception as time_err:
+                    logger.debug(f"Could not fetch next start time: {time_err}")
+
+                # 4. Fetch All Statistics (Running Time, Collisions, etc.)
+                try:
+                    statuses = await self.m.command("GetAllStatistics")
+                    if isinstance(statuses, dict):
+                        # We inject the exact keys like 'totalRunningTime' into our payload
+                        for status, value in statuses.items():
+                            self.msg_state.update({str(status): value})
+                except Exception as stat_err:
+                    logger.warning(f"Could not fetch extended statistics: {stat_err}")
+
+                # Send exactly formatted JSON to MQTT
+                self.bridge.publish(self.msg_state)
+
+                return str(activity)
+
+            finally:
+                if hasattr(self.m, "disconnect"):
+                    try:
+                        await self.m.disconnect()
+                    except Exception as clean_err:
+                        logger.debug(
+                            f"Ignored cleanup error in poll_mower_data: {clean_err}"
+                        )
+
+    async def main_loop(self):
+        """
+        Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
+        """
+        while True:
+            try:
+                # Create a new mower instance for each connection attempt to ensure a clean state
+                # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
+                activity = await self.poll_mower_data()
+                error_counter = 0  # Reset error counter after a successful cycle
+                sleep_time = 0
+                # --- Smart Polling Interval Logic ---
+                if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
+                    sleep_time = self.config["system"]["poll_active"]
+                    logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
+                elif activity == "NOT_FOUND":
+                    sleep_time = 120
+                    logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
+                else:
+                    # Default to idle sleep time
+                    sleep_time = self.config["system"]["poll_idle"]
+
+                    # check if we have a valid next start time to potentially shorten the sleep interval
+                    next_start_str = self.msg_state.get("Next start time", "None")
+                    if next_start_str != "None":
+                        try:
+                            # Parse the next start time from the payload
+                            next_start = datetime.strptime(
+                                next_start_str, "%Y-%m-%d %H:%M:%S"
+                            )
+                            now = datetime.now()
+
+                            # Calculate the time difference in seconds
+                            time_to_start = (next_start - now).total_seconds()
+
+                            # If the mower is scheduled to start within the next 'sleep_time' seconds, we adjust the sleep time to wake up shortly before the mower starts.
+                            if 0 < time_to_start < sleep_time:
+                                # We want to wake up a bit before the mower starts to ensure we catch the active state as soon as it happens, but we also don't want to wake up too early.
+                                # Here we choose to wake up 60 seconds before the scheduled start time, or at the configured active poll interval, whichever is longer, to ensure we are in the right state to catch the mower starting.
+                                sleep_time = max(
+                                    time_to_start - 60,
+                                    self.config["system"]["poll_active"],
+                                )
+                                logger.info(
+                                    f"Mower starts soon. Adjusting sleep to {sleep_time:.0f} seconds to wake up preemptively."
+                                )
+                            else:
+                                logger.info(
+                                    f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
+                                )
+
+                        except Exception as e:
+                            logger.debug(f"Could not calculate preemptive wakeup: {e}")
                             logger.info(
                                 f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
                             )
-
-                    except Exception as e:
-                        logger.debug(f"Could not calculate preemptive wakeup: {e}")
+                    else:
                         logger.info(
                             f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
                         )
-                else:
-                    logger.info(
-                        f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
-                    )
-            await asyncio.sleep(sleep_time)
+                await asyncio.sleep(sleep_time)
 
-        except Exception as e:
-            error_counter += 1
-            logger.error(f"Main connection loop crashed: {e}")
+            except Exception as e:
+                self.error_counter += 1
+                logger.error(f"Main connection loop crashed: {e}")
 
-            logger.info("Waiting 30 seconds for BlueZ cleanup before reconnecting...")
-            await asyncio.sleep(30)
+                logger.info(
+                    "Waiting 30 seconds for BlueZ cleanup before reconnecting..."
+                )
+                await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
