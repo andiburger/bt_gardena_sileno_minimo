@@ -44,30 +44,52 @@ class GardenaMQTTBridge:
         self.config = config
         self.broker = config["mqtt"]["broker"]
         self.port = int(config["mqtt"]["port"])
-        self.topic = config["mqtt"]["topic"]
-        self.topic_cmd = config["mqtt"]["topic_cmd"]
         self.client_id = f"publish-{random.randint(0, 1000)}"
+        self.mowers = {}
+        self.client = None
+
+    def add_mower(self, mower_id, mower_object):
+        self.mowers[mower_id] = mower_object
+        base = self.config["mqtt"]["topic_base"]
+        mower_object.topic_status = f"{base}/{mower_id}/status"
+        mower_object.topic_cmd = f"{base}/{mower_id}/cmd"
 
     def connect_mqtt(self):
         """
-        Connects to the MQTT broker and sets up callbacks for connection and message handling.
+        Connects to the MQTT broker and sets up callbacks.
         """
 
         def on_connect(client, userdata, flags, reason_code, properties):
             if reason_code == 0:
                 logger.info("Connected to MQTT Broker!")
-                if self.topic_cmd:
-                    client.subscribe(self.topic_cmd)
-                    logger.info(f"Subscribed to command topic: {self.topic_cmd}")
+                for m_id, mower_obj in self.mowers.items():
+                    if hasattr(mower_obj, "topic_cmd"):
+                        client.subscribe(mower_obj.topic_cmd)
+                        logger.info(
+                            f"Subscribed to command topic: {mower_obj.topic_cmd}"
+                        )
             else:
                 logger.error(f"Failed to connect, return code {reason_code}")
 
         def on_message(client, userdata, incoming_msg):
             payload = incoming_msg.payload.decode("utf-8")
-            logger.info(f"MQTT Command received: {payload}")
-            if loop and m:
-                # execute the command in the event loop to avoid blocking the MQTT thread
-                asyncio.run_coroutine_threadsafe(process_command(payload), loop)
+            incoming_topic = incoming_msg.topic
+            logger.info(f"Command received on {incoming_topic}: {payload}")
+
+            for m_id, mower_obj in self.mowers.items():
+                if (
+                    hasattr(mower_obj, "topic_cmd")
+                    and incoming_topic == mower_obj.topic_cmd
+                ):
+                    if loop is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            mower_obj.process_command(payload), loop
+                        )
+                    else:
+                        logger.error(
+                            "Critical: Asyncio loop not initialized. Cannot process command."
+                        )
+                    break
 
         self.client = mqtt_client.Client(
             mqtt_client.CallbackAPIVersion.VERSION2, client_id=self.client_id
@@ -86,19 +108,19 @@ class GardenaMQTTBridge:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish(self, msg_payload):
+    def publish(self, topic, msg_payload):
         """Publishes a message to the MQTT state topic."""
-        if self.topic is None:
+        if topic is None:
             raise ValueError("MQTT topic must be set before publishing.")
         # Using retain=True so Home Assistant always has the latest state upon reboot
         result = self.client.publish(
-            self.topic, json.dumps(msg_payload, indent=4), retain=True
+            topic, json.dumps(msg_payload, indent=4), retain=True
         )
         status = result[0]
         if status == 0:
-            logger.info(f"Sent state payload to topic `{self.topic}`")
+            logger.info(f"Sent state payload to topic `{topic}`")
         else:
-            logger.error(f"Failed to send message to topic {self.topic}")
+            logger.error(f"Failed to send message to topic {topic}")
 
     def publish_discovery(
         self,
@@ -328,6 +350,8 @@ class LawnMowerEntity:
         self.static_info = {}
         self.discovery_sent = False
         self.error_counter = 0
+        self.topic_status = None
+        self.topic_cmd = None
         # instance of the mower will be created on demand in the command processing to ensure a clean state for each connection
         self.m = mower.Mower(random.randint(100000000, 999999999), address, pin)
 
@@ -484,7 +508,7 @@ class LawnMowerEntity:
                             serial_num,
                             str(model),
                             manufacturer,
-                            self.topic,
+                            self.topic_status,
                             self.topic_cmd,
                         )
                         self.discovery_sent = True
@@ -537,7 +561,7 @@ class LawnMowerEntity:
                     logger.warning(f"Could not fetch extended statistics: {stat_err}")
 
                 # Send exactly formatted JSON to MQTT
-                self.bridge.publish(self.msg_state)
+                self.bridge.publish(self.topic_status, self.msg_state)
 
                 return str(activity)
 
@@ -559,7 +583,7 @@ class LawnMowerEntity:
                 # Create a new mower instance for each connection attempt to ensure a clean state
                 # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
                 activity = await self.poll_mower_data()
-                error_counter = 0  # Reset error counter after a successful cycle
+                self.error_counter = 0  # Reset error counter after a successful cycle
                 sleep_time = 0
                 # --- Smart Polling Interval Logic ---
                 if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
@@ -623,53 +647,54 @@ class LawnMowerEntity:
 
 
 if __name__ == "__main__":
-    """
-    Main entry point.
-    """
     import signal
     import sys
 
     cfg_parser = GardenaCfg()
     result = cfg_parser.parse()
     log_level_str = result["system"]["log_level"]
-    # Convert log level string to numeric value
     numeric_level = getattr(logging, log_level_str, logging.INFO)
-
-    # Set log level for our logger
     logger.setLevel(numeric_level)
-    # Also set the root logger level to ensure all messages are captured according to the configured level
     logging.getLogger().setLevel(numeric_level)
 
     logger.info(f"Starting Gardena BLE to MQTT Bridge (Log Level: {log_level_str})...")
-    broker = result["mqtt"]["broker"]
-    port = int(result["mqtt"]["port"])
-    topic = result["mqtt"]["topic"]
-    topic_cmd = result["mqtt"]["topic_cmd"]
-    address = result["mower"]["address"]
-    pin = int(result["mower"]["pin"])
 
     bridge = GardenaMQTTBridge(result)
+
+    mower_entities = []
+    for mower_cfg in result["mowers"]:
+        m = LawnMowerEntity(
+            name=mower_cfg["name"],
+            address=mower_cfg["address"],
+            pin=int(mower_cfg["pin"]),
+            bridge=bridge,
+            config=result,
+        )
+        bridge.add_mower(mower_cfg["id"], m)
+        mower_entities.append(m)
+
     bridge.connect_mqtt()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     def shutdown_handler(sig, frame):
-        logger.info("Received stop signal (SIGTERM/SIGINT). Shutting down safely...")
+        logger.info("Received stop signal. Shutting down safely...")
         bridge.stop()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, shutdown_handler)  # Handle Ctrl+C gracefully
-    signal.signal(
-        signal.SIGTERM, shutdown_handler
-    )  # Handle docker stop or system shutdown gracefully
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    async def run_all_mowers():
+        tasks = [mower.main_loop() for mower in mower_entities]
+        await asyncio.gather(*tasks)
 
     try:
-        loop.run_until_complete(main_loop(result["system"], bridge=bridge))
+        loop.run_until_complete(run_all_mowers())
     except Exception as e:
         logger.error(f"Fatal error: {e}")
     finally:
-        # Fallback Cleanup
         bridge.stop()
         if not loop.is_closed():
             loop.close()

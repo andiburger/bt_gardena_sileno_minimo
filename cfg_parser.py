@@ -32,47 +32,51 @@ class GardenaCfg:
         Parses the configuration file (cfg.ini) and extracts the necessary information.
         If keys are missing, safe fallback defaults are provided to prevent crashes.
         """
-        # Wir lesen die Datei (falls sie nicht existiert, bleibt config leer, aber das Skript stürzt dank der Fallbacks nicht ab!)
         self.config.read("cfg.ini")
+        result = {"mowers": [], "mqtt": {}, "system": {}}
 
-        result = {"mower": {}, "mqtt": {}, "system": {}}
+        # --- MOWER SETTINGS (dynamic) ---
+        for section in self.config.sections():
+            if section.startswith("mower"):
+                result["mowers"].append(
+                    {
+                        "id": section,
+                        "name": self.config.get(section, "name", fallback=section),
+                        "address": self.config.get(
+                            section, "address", fallback="00:00:00:00:00:00"
+                        ),
+                        "pin": self.config.get(section, "pin", fallback="0000"),
+                    }
+                )
+        # fallback for no mowers defined at all - we add a default mower to ensure the rest of the system can still function and be tested without a cfg.ini
+        if not result["mowers"]:
+            result["mowers"].append(
+                {
+                    "id": "mower_1",
+                    "name": "Default Mower",
+                    "address": "00:00:00:00:00:00",
+                    "pin": "0000",
+                }
+            )
 
-        # --- MOWER SETTINGS (mit Fallbacks) ---
-        result["mower"].update(
-            {
-                # Fallback auf Dummy-Mac, falls vergessen
-                "address": self.config.get(
-                    "mower", "address", fallback="00:00:00:00:00:00"
-                ),
-                # Standard Gardena PIN
-                "pin": self.config.get("mower", "pin", fallback="0000"),
-            }
-        )
-
-        # --- MQTT SETTINGS (mit Fallbacks) ---
+        # --- MQTT SETTINGS ---
         result["mqtt"].update(
             {
-                # Fallback auf localhost, falls der Broker auf dem gleichen Pi läuft
                 "broker": self.config.get("mqtt", "broker", fallback="127.0.0.1"),
-                # Standard MQTT Port
                 "port": self.config.get("mqtt", "port", fallback="1883"),
-                # Standard Topics, damit Home Assistant sie auf jeden Fall findet
-                "topic": self.config.get(
-                    "mqtt", "topic", fallback="gardena/automower/status"
-                ),
-                "topic_cmd": self.config.get(
-                    "mqtt", "topic_cmd", fallback="gardena/automower/cmd"
+                # load topic_base with fallback, and then derive topic and topic_cmd from it
+                "topic_base": self.config.get(
+                    "mqtt", "topic_base", fallback="gardena/automower"
                 ),
             }
         )
 
-        # --- SYSTEM SETTINGS (mit Fallbacks) ---
+        # --- SYSTEM SETTINGS (w/ fallbacks) ---
         result["system"].update(
             {
                 "log_level": self.config.get(
                     "system", "log_level", fallback="INFO"
                 ).upper(),
-                # NEU: Konfigurierbare Polling-Zeiten (in Sekunden)
                 "poll_active": int(
                     self.config.get("system", "poll_active", fallback="60")
                 ),
