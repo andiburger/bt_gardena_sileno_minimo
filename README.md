@@ -84,14 +84,3 @@ Gardena mowers require an OS-level confirmation for the very first pairing.
 ## 📄 License
 
 MIT License – see LICENSE
-
-## Status
-[![Code Formatting (Black)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml)
-
-[![Pylint](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml)
-
-[![Python application](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml)
-
-[![Security Scanner (Bandit)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml)
-
-[![Docker Build & Publish](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml)
