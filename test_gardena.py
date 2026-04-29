@@ -143,3 +143,25 @@ async def test_poll_mower_data_not_found(mock_scan, mower):
 
     # Es sollte kein publish stattgefunden haben (außer vllt. Discovery)
     assert not mower.m.connect.called
+
+
+# --- 4. BRIDGE ROUTING TESTS ---
+
+
+def test_bridge_add_mower(mock_config):
+    """Testet, ob die Bridge neuen Mähern die korrekten Topics zuweist."""
+    bridge = GardenaMQTTBridge(mock_config)
+
+    # Wir erzeugen ein leeres Dummy-Objekt (Fake-Mäher)
+    class FakeMower:
+        pass
+
+    fake_mower = FakeMower()
+
+    # Mäher der Bridge hinzufügen
+    bridge.add_mower("mower_1", fake_mower)
+
+    # Prüfen, ob er in der Liste ist und die Topics stimmen
+    assert "mower_1" in bridge.mowers
+    assert fake_mower.topic_status == "gardena/automower/mower_1/status"
+    assert fake_mower.topic_cmd == "gardena/automower/mower_1/cmd"

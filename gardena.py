@@ -461,13 +461,13 @@ class LawnMowerEntity:
             except Exception as e:
                 logger.error(f"Error processing command {payload}: {e}")
             finally:
-                # Always disconnect after a command to free up BlueZ
                 if hasattr(self.m, "disconnect"):
                     try:
-                        await self.m.disconnect()
+                        # Always disconnect after polling to free up BlueZ, even if errors occur
+                        await asyncio.wait_for(self.m.disconnect(), timeout=5.0)
                     except Exception as clean_err:
                         logger.debug(
-                            f"Ignored cleanup error in process_command: {clean_err}"
+                            f"Ignored cleanup error in poll_mower_data: {clean_err}"
                         )
 
     async def poll_mower_data(self):
@@ -568,7 +568,8 @@ class LawnMowerEntity:
             finally:
                 if hasattr(self.m, "disconnect"):
                     try:
-                        await self.m.disconnect()
+                        # Always disconnect after polling to free up BlueZ, even if errors occur
+                        await asyncio.wait_for(self.m.disconnect(), timeout=5.0)
                     except Exception as clean_err:
                         logger.debug(
                             f"Ignored cleanup error in poll_mower_data: {clean_err}"
