@@ -154,7 +154,9 @@ def test_bridge_add_mower(mock_config):
 
     # Wir erzeugen ein leeres Dummy-Objekt (Fake-Mäher)
     class FakeMower:
-        pass
+        def __init__(self):
+            self.topic_status = None
+            self.topic_cmd = None
 
     fake_mower = FakeMower()
 
