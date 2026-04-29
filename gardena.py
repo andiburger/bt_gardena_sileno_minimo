@@ -550,92 +550,69 @@ class LawnMowerEntity:
                 except Exception as time_err:
                     logger.debug(f"Could not fetch next start time: {time_err}")
 
-                # 4. Fetch All Statistics (Running Time, Collisions, etc.)
-                try:
-                    statuses = await self.m.command("GetAllStatistics")
-                    if isinstance(statuses, dict):
-                        # We inject the exact keys like 'totalRunningTime' into our payload
-                        for status, value in statuses.items():
-                            self.msg_state.update({str(status): value})
-                except Exception as stat_err:
-                    logger.warning(f"Could not fetch extended statistics: {stat_err}")
+async def main_loop(config: dict):
+    """
+    Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
+    """
+    global error_counter, m
 
-                # Send exactly formatted JSON to MQTT
-                self.bridge.publish(self.topic_status, self.msg_state)
+    while True:
+        try:
+            # Create a new mower instance for each connection attempt to ensure a clean state
+            m = mower.Mower(random.randint(100000000, 999999999), address, pin)
 
-                return str(activity)
+            # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
+            activity = await poll_mower_data(m, client)
+            error_counter = 0  # Reset error counter after a successful cycle
+            # --- Smart Polling Interval Logic ---
+            if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
+                sleep_time = config["system"]["poll_active"]
+                logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
+            elif activity == "NOT_FOUND":
+                sleep_time = 120
+                logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
+            else:
+                # Default to idle sleep time
+                sleep_time = config["system"]["poll_idle"]
 
-            finally:
-                if hasattr(self.m, "disconnect"):
+                # check if we have a valid next start time to potentially shorten the sleep interval
+                next_start_str = msg.get("Next start time", "None")
+                if next_start_str != "None":
                     try:
-                        # Always disconnect after polling to free up BlueZ, even if errors occur
-                        await asyncio.wait_for(self.m.disconnect(), timeout=5.0)
-                    except Exception as clean_err:
-                        logger.debug(
-                            f"Ignored cleanup error in poll_mower_data: {clean_err}"
+                        # Parse the next start time from the payload
+                        next_start = datetime.strptime(
+                            next_start_str, "%Y-%m-%d %H:%M:%S"
                         )
+                        now = datetime.now()
 
-    async def main_loop(self):
-        """
-        Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
-        """
-        while True:
-            try:
-                # Create a new mower instance for each connection attempt to ensure a clean state
-                # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
-                activity = await self.poll_mower_data()
-                self.error_counter = 0  # Reset error counter after a successful cycle
-                sleep_time = 0
-                # --- Smart Polling Interval Logic ---
-                if activity in ["1", "2", "3", "MOWING", "SEARCHING", "LEAVING"]:
-                    sleep_time = self.config["system"]["poll_active"]
-                    logger.info(f"Mower is ACTIVE. Sleeping for {sleep_time} seconds.")
-                elif activity == "NOT_FOUND":
-                    sleep_time = 120
-                    logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
-                else:
-                    # Default to idle sleep time
-                    sleep_time = self.config["system"]["poll_idle"]
+                        # Calculate the time difference in seconds
+                        time_to_start = (next_start - now).total_seconds()
 
-                    # check if we have a valid next start time to potentially shorten the sleep interval
-                    next_start_str = self.msg_state.get("Next start time", "None")
-                    if next_start_str != "None":
-                        try:
-                            # Parse the next start time from the payload
-                            next_start = datetime.strptime(
-                                next_start_str, "%Y-%m-%d %H:%M:%S"
+                        # If the mower is scheduled to start within the next 'sleep_time' seconds, we adjust the sleep time to wake up shortly before the mower starts.
+                        if 0 < time_to_start < sleep_time:
+                            # We want to wake up a bit before the mower starts to ensure we catch the active state as soon as it happens, but we also don't want to wake up too early.
+                            # Here we choose to wake up 60 seconds before the scheduled start time, or at the configured active poll interval, whichever is longer, to ensure we are in the right state to catch the mower starting.
+                            sleep_time = max(
+                                time_to_start - 60, config["system"]["poll_active"]
                             )
-                            now = datetime.now()
-
-                            # Calculate the time difference in seconds
-                            time_to_start = (next_start - now).total_seconds()
-
-                            # If the mower is scheduled to start within the next 'sleep_time' seconds, we adjust the sleep time to wake up shortly before the mower starts.
-                            if 0 < time_to_start < sleep_time:
-                                # We want to wake up a bit before the mower starts to ensure we catch the active state as soon as it happens, but we also don't want to wake up too early.
-                                # Here we choose to wake up 60 seconds before the scheduled start time, or at the configured active poll interval, whichever is longer, to ensure we are in the right state to catch the mower starting.
-                                sleep_time = max(
-                                    time_to_start - 60,
-                                    self.config["system"]["poll_active"],
-                                )
-                                logger.info(
-                                    f"Mower starts soon. Adjusting sleep to {sleep_time:.0f} seconds to wake up preemptively."
-                                )
-                            else:
-                                logger.info(
-                                    f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
-                                )
-
-                        except Exception as e:
-                            logger.debug(f"Could not calculate preemptive wakeup: {e}")
+                            logger.info(
+                                f"Mower starts soon. Adjusting sleep to {sleep_time:.0f} seconds to wake up preemptively."
+                            )
+                        else:
                             logger.info(
                                 f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
                             )
-                    else:
+
+                    except Exception as e:
+                        logger.debug(f"Could not calculate preemptive wakeup: {e}")
                         logger.info(
                             f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
                         )
-                await asyncio.sleep(sleep_time)
+                else:
+                    logger.info(
+                        f"Mower is IDLE/PARKED. Sleeping for {sleep_time} seconds."
+                    )
+            await asyncio.sleep(sleep_time)
 
             except Exception as e:
                 self.error_counter += 1
