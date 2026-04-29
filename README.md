@@ -1,34 +1,46 @@
 # Gardena BLE to MQTT Bridge (Sileno Minimo)
 
-A robust, highly optimized Python service to bridge Gardena Automowers (like the Sileno Minimo) via Bluetooth Low Energy (BLE) to an MQTT broker. Fully integrated with **Home Assistant Auto-Discovery**.
+[![Code Formatting (Black)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml)
+[![Pylint](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml)
+[![Python application](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml)
+[![Security Scanner (Bandit)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml)
+[![Docker Build & Publish](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml)
+
+A robust, highly optimized, and fully object-oriented Python service to bridge Gardena Automowers (like the Sileno Minimo) via Bluetooth Low Energy (BLE) to an MQTT broker. Fully integrated with **Home Assistant Auto-Discovery**.
 
 Based on the [AutoMower-BLE](https://github.com/alistair23/AutoMower-BLE) library by alistair23.
 
 ## ✨ Key Features
-* **Home Assistant Auto-Discovery:** Connects once, and your mower automatically appears in HA with all sensors (Battery, Activity, Next Start, Statistics) and controls (Start, Pause, Park).
-* **Smart Polling (Connect-on-Demand):** To protect the mower's battery and prevent Linux Bluetooth crashes, this script does NOT keep a constant connection open. It connects, reads data, and disconnects immediately. (60s intervals while mowing, 15m while parked).
+* **Multi-Mower Ready:** Control multiple Gardena mowers simultaneously from a single Raspberry Pi/Docker container. The script perfectly queues Bluetooth commands to prevent hardware crashes.
+* **Home Assistant Auto-Discovery:** Connects once, and your mowers automatically appear in HA with all sensors (Battery, Activity, Next Start, Statistics) and controls (Start, Pause, Park).
+* **Preemptive Smart Polling:** To protect the mower's battery, the script does NOT keep a constant connection open. It calculates the exact next start time and wakes up automatically 60 seconds before the mower leaves the dock. (60s intervals while mowing, up to 15m while parked).
 * **Auto-Recovery:** Catches `BlueZ` zombie connections and library crashes gracefully without bringing down the service.
 * **Fully Dockerized:** Includes a highly optimized, lightweight Debian-slim Dockerfile.
 
 ## ⚙️ Configuration (`cfg.ini`)
-Create a file named `cfg.ini` in the root directory (you can use `cfg.example.ini` as a template):
+Create a file named `cfg.ini` in the root directory (you can use `cfg.example.ini` as a template). You can add as many `[mower_x]` sections as you have physical mowers.
 
 ```ini
-[mower]
-address = 84:72:93:94:B6:4C  # Your mower's Bluetooth MAC address
-pin = 1234                   # Your Gardena PIN
-
 [mqtt]
-broker = 192.168.1.100       # MQTT Broker IP
+broker = 192.168.1.100          # MQTT Broker IP
 port = 1883
-topic = gardena/automower/status
-topic_cmd = gardena/automower/cmd
+topic_base = gardena/automower  # Base topic (creates .../mower_1/status, etc.)
 
 [system]
-log_level = INFO             # DEBUG, INFO, WARNING, ERROR
-poll_active = 60             # Polling interval while mowing (seconds)
-poll_idle = 900              # Polling interval while parked (seconds)
-poll_error = 30              # Timeout after a Bluetooth error (seconds)
+log_level = INFO                # DEBUG, INFO, WARNING, ERROR
+poll_active = 60                # Polling interval while mowing (seconds)
+poll_idle = 900                 # Polling interval while parked (seconds)
+poll_error = 30                 # Timeout after a Bluetooth error (seconds)
+
+[mower_1]
+name = Minimo Front
+address = 84:72:93:94:B6:4C     # Your mower's Bluetooth MAC address
+pin = 1234                      # Your Gardena PIN
+
+[mower_2]
+name = Minimo Back
+address = 11:22:33:44:55:66
+pin = 5678
 ```
 ## 🐳 Installation (Docker - Recommended)
 Since the container needs access to the host's Bluetooth hardware, you must mount the dbus and run it in privileged/host-network mode.
