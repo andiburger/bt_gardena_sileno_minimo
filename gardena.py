@@ -391,7 +391,9 @@ class LawnMowerEntity:
         async with ble_lock:
             try:
                 logger.info("Command execution: Scanning for mower...")
-                device = await BleakScanner.find_device_by_address(self.address)
+                device = await BleakScanner.find_device_by_address(
+                    self.address, timeout=30.0
+                )
                 if not device:
                     logger.error("Command failed: Mower not found in Bluetooth range.")
                     return
