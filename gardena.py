@@ -106,7 +106,7 @@ class GardenaMQTTBridge:
             raise ValueError(
                 "MQTT broker address and port must be set before connecting."
             )
-        self.client.connect(broker, port)
+        self.client.connect(self.broker, self.port)
         self.client.loop_start()  # Start the MQTT client loop in a separate thread
 
     def stop(self):
