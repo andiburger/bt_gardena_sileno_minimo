@@ -593,6 +593,12 @@ class LawnMowerEntity:
                 elif activity == "NOT_FOUND":
                     sleep_time = 120
                     logger.info("Mower NOT FOUND. Sleeping for 120 seconds.")
+                    if self.topic_status:
+                        error_payload = self.msg_state.copy() if self.msg_state else {}
+                        error_payload["MowerActivity"] = (
+                            "7"  # 7 = error status in HA template
+                        )
+                        self.bridge.publish(self.topic_status, error_payload)
                 else:
                     # Default to idle sleep time
                     sleep_time = self.config["system"]["poll_idle"]
@@ -640,7 +646,12 @@ class LawnMowerEntity:
             except Exception as e:
                 self.error_counter += 1
                 logger.error(f"Main connection loop crashed: {e}")
-
+                if self.topic_status:
+                    error_payload = self.msg_state.copy() if self.msg_state else {}
+                    error_payload["MowerActivity"] = (
+                        "7"  # 7 = Fehler-Status im HA Template
+                    )
+                    self.bridge.publish(self.topic_status, error_payload)
                 logger.info(
                     "Waiting 30 seconds for BlueZ cleanup before reconnecting..."
                 )
