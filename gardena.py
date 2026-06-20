@@ -41,6 +41,7 @@ class GardenaMQTTBridge:
     """
 
     def __init__(self, config: dict):
+        self.config = config
         mqtt_cfg = config.get("mqtt", {})
         self.broker = mqtt_cfg.get("broker")
         self.port = int(mqtt_cfg.get("port", 1883))
