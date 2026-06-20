@@ -41,9 +41,13 @@ class GardenaMQTTBridge:
     """
 
     def __init__(self, config: dict):
-        self.config = config
-        self.broker = config["mqtt"]["broker"]
-        self.port = int(config["mqtt"]["port"])
+        mqtt_cfg = config.get("mqtt", {})
+        self.broker = mqtt_cfg.get("broker")
+        self.port = int(mqtt_cfg.get("port", 1883))
+
+        if not self.broker or not self.port:
+            raise ValueError("MQTT broker address and port must be set in cfg.ini!")
+
         self.client_id = f"publish-{random.randint(0, 1000)}"
         self.mowers = {}
         self.client = None
