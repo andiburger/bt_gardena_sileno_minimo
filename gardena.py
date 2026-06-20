@@ -102,7 +102,7 @@ class GardenaMQTTBridge:
         )
         self.client.on_connect = on_connect
         self.client.on_message = on_message
-        if broker is None or port is None:
+        if self.broker is None or self.port is None:
             raise ValueError(
                 "MQTT broker address and port must be set before connecting."
             )
