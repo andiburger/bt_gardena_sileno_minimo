@@ -63,3 +63,18 @@ jobs:
           # von Bluetooth-Headern über QEMU sonst extrem lange dauert.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: 'table'
+          # Bricht den Build ab (rot), wenn kritische Fehler gefunden werden
+          exit-code: '1'
+          # Ignoriert Fehler, für die es aktuell noch gar keinen Patch gibt
+          ignore-unfixed: true
+          # Wir suchen nur nach den schlimmsten Lücken
+          severity: 'CRITICAL,HIGH'
+        env:
+          # Stellt sicher, dass Trivy dein Image herunterladen darf
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
