@@ -1,7 +1,8 @@
 # Gardena BLE to MQTT Bridge (Sileno Minimo)
 
 [![CI Pipeline](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/ci-pipeline.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/ci-pipeline.yml)
-[![Docker Build & Publish](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml)
+[![Docker Build & Publish](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml/badge.svg?event=release)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml)
+[![codecov](https://codecov.io/gh/andiburger/bt_gardena_sileno_minimo/graph/badge.svg?token=DEIN_CODECOV_TOKEN)](https://codecov.io/gh/andiburger/bt_gardena_sileno_minimo)
 
 A robust, highly optimized, and fully object-oriented Python service to bridge Gardena Automowers (like the Sileno Minimo) via Bluetooth Low Energy (BLE) to an MQTT broker. Fully integrated with **Home Assistant Auto-Discovery**.
 
