@@ -41,7 +41,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            # 1. Immer "latest" auf dem main branch
             type=raw,value=latest,enable={{is_default_branch}}
+            # 2. NEU: Fallback 1 - Nutze den Branch-Namen (z.B. bei manuellem Trigger)
+            type=ref,event=branch
+            # 3. NEU: Fallback 2 - Nutze den exakten Tag-Namen (auch wenn es kein "v1.0.0" ist)
+            type=ref,event=tag
+            # 4. Saubere semantische Versionierung (v1.0.0 -> 1.0.0)
             type=semver,pattern={{version}}
 
       - name: Build and push Docker image
