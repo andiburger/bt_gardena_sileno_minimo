@@ -1,0 +1,16 @@
+[run]
+# Wir wollen unsere eigenen Test-Dateien nicht mit in die Prozentzahl rechnen
+omit =
+    test_*.py
+
+[report]
+# Code-Zeilen, die das Tool ignorieren soll
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    # WICHTIG: Ignoriert den Startup-Block
+    if __name__ == .__main__.:
+    # Ignoriert Exceptions, die wir im Test nicht provozieren können
+    pass
+    except Exception as e:
