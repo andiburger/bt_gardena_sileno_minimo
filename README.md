@@ -1,9 +1,6 @@
 # Gardena BLE to MQTT Bridge (Sileno Minimo)
 
-[![Code Formatting (Black)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/black.yml)
-[![Pylint](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/pylint.yml)
-[![Python application](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/python-app.yml)
-[![Security Scanner (Bandit)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/bandit.yml)
+[![CI Pipeline](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/ci-pipeline.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/ci-pipeline.yml)
 [![Docker Build & Publish](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/andiburger/bt_gardena_sileno_minimo/actions/workflows/docker-publish.yml)
 
 A robust, highly optimized, and fully object-oriented Python service to bridge Gardena Automowers (like the Sileno Minimo) via Bluetooth Low Energy (BLE) to an MQTT broker. Fully integrated with **Home Assistant Auto-Discovery**.
