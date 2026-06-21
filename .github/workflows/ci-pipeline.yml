@@ -13,10 +13,10 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -24,9 +24,7 @@ jobs:
       - name: Install system dependencies and Python packages
         run: |
           python -m pip install --upgrade pip
-          # Installiere alle nötigen Test- und Linting-Tools
-          pip install black bandit pylint pytest pytest-asyncio
-          # Installiere die Projekt-Dependencies
+          pip install black bandit pylint pytest pytest-asyncio pytest-cov
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: 1. Check Code Formatting (Black)
@@ -38,5 +36,12 @@ jobs:
       - name: 3. Linting (Pylint)
         run: pylint --errors-only $(git ls-files '*.py')
 
-      - name: 4. Unit Tests (Pytest)
-        run: pytest
+      - name: 4. Unit Tests & Coverage Report
+        # Erzeugt nun die für Codecov notwendige coverage.xml
+        run: pytest --cov=. --cov-report=xml
+
+      - name: 5. Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
