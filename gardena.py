@@ -366,6 +366,8 @@ class LawnMowerEntity:
         Safely processes incoming commands (Start, Pause, Park, Schedule).
         Implements Connect-on-Demand to avoid interrupting the deep sleep.
         """
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
         if payload.startswith("ADD_TASK:"):
             try:
                 _, params = payload.split(":")
