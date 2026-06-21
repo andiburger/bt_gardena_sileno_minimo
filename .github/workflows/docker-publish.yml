@@ -1,15 +1,14 @@
 name: Docker Build & Publish
 
 on:
-  push:
-    branches: [ "main" ]
-  release:                 # <--- DIESE ZEILE HAT GEFEHLT!
+  # WICHTIG: push auf "main" haben wir entfernt! 
+  # Dadurch baut er nicht mehr bei jedem kleinen Code-Update.
+  release:
     types: [published]
-  workflow_dispatch:       # <--- Für den manuellen "Play-Button"
+  workflow_dispatch:       # Für den manuellen "Play-Button"
 
 env:
   REGISTRY: ghcr.io
-  # IMAGE_NAME is the name of the Docker image, in this case the same as the GitHub repository name
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -53,3 +52,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # --- NEU: CACHING ---
+          # Das ist bei linux/arm64 zwingend nötig, da das Kompilieren 
+          # von Bluetooth-Headern über QEMU sonst extrem lange dauert.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
