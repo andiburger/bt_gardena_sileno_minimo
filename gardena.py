@@ -14,6 +14,7 @@ import json
 from paho.mqtt import client as mqtt_client
 from cfg_parser import GardenaCfg
 import logging
+import subprocess
 
 # --- Configuration & Logging ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
@@ -487,7 +488,9 @@ class LawnMowerEntity:
         """
         # Request the Bluetooth lock to ensure no commands interfere
         async with ble_lock:
-            device = await BleakScanner.find_device_by_address(self.m.address)
+            device = await BleakScanner.find_device_by_address(
+                self.m.address, timeout=30.0
+            )
             if device is None:
                 return "NOT_FOUND"
 
@@ -654,8 +657,29 @@ class LawnMowerEntity:
                 await asyncio.sleep(sleep_time)
 
             except Exception as e:
+                error_msg = str(e)
                 self.error_counter += 1
                 logger.error(f"Main connection loop crashed: {e}")
+                if "NotPermitted" in error_msg or "Notify acquired" in error_msg:
+                    logger.warning(
+                        "Bluetooth stack error detected. Attempting to restart the Bluetooth service..."
+                    )
+                    try:
+                        # Restart the Bluetooth service using systemctl
+                        subprocess.run(
+                            ["sudo", "systemctl", "restart", "bluetooth"], check=True
+                        )
+                        logger.info(
+                            "Bluetooth service restarted successfully. Waiting 10 seconds for the chip to initialize..."
+                        )
+                        await asyncio.sleep(
+                            10
+                        )  # Wait a bit for the Bluetooth chip to initialize after the restart
+                    except Exception as cmd_error:
+                        logger.error(
+                            f"Failed to restart Bluetooth service: {cmd_error}"
+                        )
+                # -----------------------------------
                 if self.topic_status:
                     error_payload = self.msg_state.copy() if self.msg_state else {}
                     error_payload["MowerActivity"] = (
