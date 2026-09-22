@@ -660,15 +660,28 @@ class LawnMowerEntity:
                 error_msg = str(e)
                 self.error_counter += 1
                 logger.error(f"Main connection loop crashed: {e}")
-                if "NotPermitted" in error_msg or "Notify acquired" in error_msg:
+                if (
+                    "NotPermitted" in error_msg
+                    or "Notify acquired" in error_msg
+                    or "POWERED_OFF" in error_msg
+                ):
                     logger.warning(
                         "Bluetooth stack error detected. Attempting to restart the Bluetooth service..."
                     )
                     try:
+                        # On Raspberry Pi, the chip sometimes needs to be completely unblocked/reset
+                        subprocess.run(
+                            ["sudo", "rfkill", "unblock", "bluetooth"], check=False
+                        )
+
                         # Restart the Bluetooth service using systemctl
                         subprocess.run(
                             ["sudo", "systemctl", "restart", "bluetooth"], check=True
                         )
+
+                        # Bring the hci0 interface explicitly up
+                        subprocess.run(["sudo", "hciconfig", "hci0", "up"], check=False)
+
                         logger.info(
                             "Bluetooth service restarted successfully. Waiting 10 seconds for the chip to initialize..."
                         )

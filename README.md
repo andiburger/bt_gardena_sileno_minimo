@@ -55,16 +55,38 @@ docker run -d \
   ```
   (Tip: We mount cfg.ini externally so you can change settings without rebuilding the container).
 
-  ## 🐍 Installation (Bare Metal / systemd)
+## 🐍 Installation (Bare Metal / systemd)
 
-  ```bash
-  git clone <your-repo-url>
+```bash
+git clone <your-repo-url>
 cd bt_gardena_sileno_minimo
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python gardena.py
 ```
+
+### Systemd Service Setup & Auto-Recovery
+This bridge includes an advanced **Auto-Recovery** feature that can detect if the Raspberry Pi's Bluetooth hardware (`hci0`) soft-crashes during weeks of continuous BLE polling. When a crash is detected, the script will automatically run system-level commands (`systemctl restart bluetooth`, `rfkill`, `hciconfig`) to revive the hardware without bringing down the bridge.
+
+Because of this, the script requires **admin privileges**. When creating your systemd service (`/etc/systemd/system/gardena.service`), you have two options for the `User=` directive:
+
+**Option A: Run as Root (Easiest)**
+Set the user to root in your service file so it has full privileges:
+```ini
+[Service]
+User=root
+WorkingDirectory=/path/to/bt_gardena_sileno_minimo
+ExecStart=/path/to/bt_gardena_sileno_minimo/venv/bin/python gardena.py
+Restart=always
+```
+
+**Option B: Run as a normal user (More Secure)**
+If you prefer to run the service as a standard user (e.g., `User=pi`), you must grant that user passwordless `sudo` access specifically for the recovery commands.
+Run `sudo visudo -f /etc/sudoers.d/gardena_bluetooth` and add the following line:
+```text
+pi ALL=(root) NOPASSWD: /bin/systemctl restart bluetooth, /usr/bin/systemctl restart bluetooth, /usr/sbin/rfkill unblock bluetooth, /bin/hciconfig hci0 up, /usr/bin/hciconfig hci0 up
+```
+*(Remember to replace `pi` with your actual username if it differs)*.
 
 ## 🛠 Troubleshooting: Bluetooth Pairing
 Gardena mowers require an OS-level confirmation for the very first pairing.
