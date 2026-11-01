@@ -58,16 +58,61 @@ docker run -d \
   ```
   (Tip: We mount cfg.ini externally so you can change settings without rebuilding the container. The `.cache` mount keeps the mower info cache across container rebuilds, see [Winter Mode](#️-winter-mode)).
 
-  ## 🐍 Installation (Bare Metal / systemd)
+## 🐍 Installation (Bare Metal / systemd)
 
-  ```bash
-  git clone <your-repo-url>
+```bash
+git clone <your-repo-url>
 cd bt_gardena_sileno_minimo
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python gardena.py
 ```
+
+### Systemd Service Setup & Bluetooth Auto-Recovery
+After weeks of continuous BLE polling, the Raspberry Pi's Bluetooth adapter (`hci0`) can soft-crash or power down. `bleak` then reports `No powered Bluetooth adapters found ... POWERED_OFF`. The bridge detects this (and other BlueZ stack errors) and tries to revive the adapter automatically:
+
+```bash
+sudo -n rfkill unblock bluetooth
+sudo -n systemctl restart bluetooth
+sudo -n hciconfig hci0 up
+```
+
+These commands need **admin privileges**. The `-n` flag makes `sudo` fail immediately instead of waiting for a password, so a missing permission is logged as an error instead of freezing the service. When creating your systemd service (`/etc/systemd/system/gardena.service`), choose one of the following options for the `User=` directive:
+
+**Option A: Run as root (easiest)**
+```ini
+[Unit]
+Description=Gardena BLE to MQTT Bridge
+After=bluetooth.target network-online.target
+
+[Service]
+User=root
+WorkingDirectory=/path/to/bt_gardena_sileno_minimo
+ExecStart=/path/to/bt_gardena_sileno_minimo/venv/bin/python gardena.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Option B: Run as a normal user (more secure)**
+Run the service as a standard user (e.g. `User=pi`) and allow that user to run **only** the recovery commands as root without a password. Create a dedicated sudoers file with:
+```bash
+sudo visudo -f /etc/sudoers.d/gardena_bluetooth
+```
+and add this line (replace `pi` with your username; check the binary paths on your system with `which systemctl rfkill hciconfig`):
+```text
+pi ALL=(root) NOPASSWD: /bin/systemctl restart bluetooth, /usr/bin/systemctl restart bluetooth, /usr/sbin/rfkill unblock bluetooth, /bin/hciconfig hci0 up, /usr/bin/hciconfig hci0 up
+```
+Test it as that user with `sudo -n systemctl restart bluetooth`. If it runs without asking for a password, the setup works.
+
+Then enable and start the service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now gardena
+```
+
+> **Manual recovery:** If the adapter is down right now, you can run the three recovery commands above by hand via SSH.
 
 ## ❄️ Winter Mode
 When the mowing season is over and you switch off your mower and bring it inside for storage, you can activate **Winter Mode** to prevent the bridge from endlessly scanning for a mower that is no longer in Bluetooth range.
