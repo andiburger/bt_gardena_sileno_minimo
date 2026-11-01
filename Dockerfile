@@ -18,8 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --upgrade --no-cache-dir pip setuptools urllib3 msgpack && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y pip setuptools && \
+    rm -rf /usr/local/lib/python3.12/ensurepip
 
 COPY . .
 
