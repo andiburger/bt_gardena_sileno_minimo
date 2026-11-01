@@ -421,7 +421,9 @@ class LawnMowerEntity:
 
         # --- Winter Mode Toggle (no BLE needed) ---
         if payload == "WINTER_ON":
-            logger.info(f"[{self.name}] Activating Winter Mode. All BLE polling stopped.")
+            logger.info(
+                f"[{self.name}] Activating Winter Mode. All BLE polling stopped."
+            )
             self.winter_mode = True
             if self.topic_status:
                 winter_payload = self.static_info.copy() if self.static_info else {}
@@ -431,7 +433,9 @@ class LawnMowerEntity:
             return
 
         if payload == "WINTER_OFF":
-            logger.info(f"[{self.name}] Deactivating Winter Mode. Resuming normal BLE polling.")
+            logger.info(
+                f"[{self.name}] Deactivating Winter Mode. Resuming normal BLE polling."
+            )
             self.winter_mode = False
             if self.topic_status:
                 resume_payload = self.static_info.copy() if self.static_info else {}
@@ -693,7 +697,9 @@ class LawnMowerEntity:
                     f"[{self.name}] HA Discovery sent from cache (no BLE connection required)."
                 )
             except Exception as e:
-                logger.warning(f"[{self.name}] Could not send discovery from cache: {e}")
+                logger.warning(
+                    f"[{self.name}] Could not send discovery from cache: {e}"
+                )
 
         while True:
             try:
@@ -704,7 +710,9 @@ class LawnMowerEntity:
                         f"[{self.name}] Winter Mode active. Sleeping for {sleep_time} seconds. Send WINTER_OFF to resume."
                     )
                     if self.topic_status:
-                        winter_payload = self.static_info.copy() if self.static_info else {}
+                        winter_payload = (
+                            self.static_info.copy() if self.static_info else {}
+                        )
                         winter_payload["MowerActivity"] = "8"
                         winter_payload["WinterMode"] = "ON"
                         self.bridge.publish(self.topic_status, winter_payload)
@@ -777,14 +785,28 @@ class LawnMowerEntity:
                 error_msg = str(e)
                 self.error_counter += 1
                 logger.error(f"Main connection loop crashed: {e}")
-                if "NotPermitted" in error_msg or "Notify acquired" in error_msg:
+                if (
+                    "NotPermitted" in error_msg
+                    or "Notify acquired" in error_msg
+                    or "POWERED_OFF" in error_msg
+                ):
                     logger.warning(
                         "Bluetooth stack error detected. Attempting to restart the Bluetooth service..."
                     )
                     try:
+                        # On Raspberry Pi, the adapter can get soft-blocked after long uptimes
+                        subprocess.run(
+                            ["sudo", "-n", "rfkill", "unblock", "bluetooth"],
+                            check=False,
+                        )
                         # Restart the Bluetooth service using systemctl
                         subprocess.run(
-                            ["sudo", "systemctl", "restart", "bluetooth"], check=True
+                            ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+                            check=True,
+                        )
+                        # Explicitly bring the hci0 interface back up
+                        subprocess.run(
+                            ["sudo", "-n", "hciconfig", "hci0", "up"], check=False
                         )
                         logger.info(
                             "Bluetooth service restarted successfully. Waiting 10 seconds for the chip to initialize..."
