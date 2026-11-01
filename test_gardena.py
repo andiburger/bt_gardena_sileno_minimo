@@ -6,6 +6,14 @@ from gardena import GardenaMQTTBridge, LawnMowerEntity
 # --- 1. SETUP FIXTURES (Bauen unsere Objekte für den Test) ---
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache_dir(tmp_path, monkeypatch):
+    """Redirects the static info cache to a temporary folder, so tests never write into the repo."""
+    cache_dir = tmp_path / ".cache"
+    monkeypatch.setattr("gardena.CACHE_DIR", str(cache_dir))
+    return cache_dir
+
+
 @pytest.fixture
 def mock_config():
     """Eine saubere Fake-Config für unsere Tests."""

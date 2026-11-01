@@ -15,6 +15,7 @@ from paho.mqtt import client as mqtt_client
 from cfg_parser import GardenaCfg
 import logging
 import subprocess
+import os
 
 # --- Configuration & Logging ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
@@ -33,6 +34,7 @@ error_counter = 0
 discovery_sent = False
 mower_static_info = {}
 ble_lock = asyncio.Lock()  # Prevents simultaneous Bluetooth commands/polling
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 
 
 class GardenaMQTTBridge:
@@ -155,7 +157,7 @@ class GardenaMQTTBridge:
                     "name": "Sileno Minimo",
                     "unique_id": f"gardena_mower_{serial_number}",
                     "activity_state_topic": state_topic,
-                    "activity_value_template": "{% if value_json.MowerActivity in ['2', '3', '4'] %} mowing {% elif value_json.MowerActivity == '5' %} docked {% elif value_json.MowerActivity == '7' %} error {% else %} paused {% endif %}",
+                    "activity_value_template": "{% if value_json.MowerActivity in ['2', '3', '4'] %} mowing {% elif value_json.MowerActivity == '5' %} docked {% elif value_json.MowerActivity == '7' %} error {% elif value_json.MowerActivity == '8' %} paused {% else %} paused {% endif %}",
                     "start_mowing_command_topic": cmd_topic,
                     "start_mowing_command_template": "START",
                     "pause_command_topic": cmd_topic,
@@ -172,7 +174,7 @@ class GardenaMQTTBridge:
                     "name": "Detailstatus",
                     "unique_id": f"g_status_{serial_number}",
                     "state_topic": state_topic,
-                    "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
+                    "value_template": "{% if value_json.MowerActivity == '2' %} Fährt los {% elif value_json.MowerActivity == '3' %} Mäht {% elif value_json.MowerActivity == '4' %} Sucht Station {% elif value_json.MowerActivity == '5' %} Geparkt {% elif value_json.MowerActivity == '7' %} Fehler {% elif value_json.MowerActivity == '8' %} Wintermodus {% else %} Unbekannt ({{ value_json.MowerActivity }}) {% endif %}",
                     "icon": "mdi:information-outline",
                     "device": device_info,
                 },
@@ -324,6 +326,23 @@ class GardenaMQTTBridge:
                     "device": device_info,
                 },
             ),
+            # 14. Winter Mode Switch
+            (
+                "switch/gardena_minimo/winter_mode/config",
+                {
+                    "name": "Wintermodus",
+                    "unique_id": f"g_winter_{serial_number}",
+                    "command_topic": cmd_topic,
+                    "state_topic": state_topic,
+                    "payload_on": "WINTER_ON",
+                    "payload_off": "WINTER_OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
+                    "value_template": "{{ value_json.WinterMode }}",
+                    "icon": "mdi:snowflake",
+                    "device": device_info,
+                },
+            ),
         ]
 
         for topic_suffix, payload in discovery_messages:
@@ -357,10 +376,40 @@ class LawnMowerEntity:
         self.static_info = {}
         self.discovery_sent = False
         self.error_counter = 0
+        self.winter_mode = False
         self.topic_status = None
         self.topic_cmd = None
         # instance of the mower will be created on demand in the command processing to ensure a clean state for each connection
         self.m = mower.Mower(random.randint(100000000, 999999999), address, pin)
+
+    def _cache_path(self):
+        """Returns the path to the cache file for this mower, based on its BLE address."""
+        safe_address = self.address.replace(":", "_")
+        return os.path.join(CACHE_DIR, f"{safe_address}.json")
+
+    def _save_static_info_cache(self):
+        """Saves static_info to a JSON cache file on disk."""
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(self._cache_path(), "w") as f:
+                json.dump(self.static_info, f, indent=2)
+            logger.info(f"[{self.name}] Static info cached to {self._cache_path()}")
+        except Exception as e:
+            logger.warning(f"[{self.name}] Could not write cache file: {e}")
+
+    def _load_static_info_cache(self):
+        """Loads static_info from the JSON cache file, if it exists. Returns True on success."""
+        cache_file = self._cache_path()
+        if not os.path.exists(cache_file):
+            return False
+        try:
+            with open(cache_file, "r") as f:
+                self.static_info = json.load(f)
+            logger.info(f"[{self.name}] Loaded cached static info from {cache_file}")
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.name}] Could not read cache file: {e}")
+            return False
 
     async def process_command(self, payload):
         """
@@ -369,6 +418,35 @@ class LawnMowerEntity:
         """
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8")
+
+        # --- Winter Mode Toggle (no BLE needed) ---
+        if payload == "WINTER_ON":
+            logger.info(f"[{self.name}] Activating Winter Mode. All BLE polling stopped.")
+            self.winter_mode = True
+            if self.topic_status:
+                winter_payload = self.static_info.copy() if self.static_info else {}
+                winter_payload["MowerActivity"] = "8"
+                winter_payload["WinterMode"] = "ON"
+                self.bridge.publish(self.topic_status, winter_payload)
+            return
+
+        if payload == "WINTER_OFF":
+            logger.info(f"[{self.name}] Deactivating Winter Mode. Resuming normal BLE polling.")
+            self.winter_mode = False
+            if self.topic_status:
+                resume_payload = self.static_info.copy() if self.static_info else {}
+                resume_payload["MowerActivity"] = "0"
+                resume_payload["WinterMode"] = "OFF"
+                self.bridge.publish(self.topic_status, resume_payload)
+            return
+
+        # --- Reject BLE commands while in Winter Mode ---
+        if self.winter_mode:
+            logger.warning(
+                f"[{self.name}] Command '{payload}' rejected: Winter Mode is active. Send WINTER_OFF first."
+            )
+            return
+
         if payload.startswith("ADD_TASK:"):
             try:
                 _, params = payload.split(":")
@@ -516,6 +594,9 @@ class LawnMowerEntity:
                         ),
                     }
 
+                    # Persist static info to disk for future restarts without BLE
+                    self._save_static_info_cache()
+
                     if not self.discovery_sent:
                         self.bridge.publish_discovery(
                             serial_num,
@@ -573,6 +654,9 @@ class LawnMowerEntity:
                 except Exception as stat_err:
                     logger.warning(f"Could not fetch extended statistics: {stat_err}")
 
+                # Add Winter Mode state to the payload for HA switch sync
+                self.msg_state["WinterMode"] = "OFF"
+
                 # Send exactly formatted JSON to MQTT
                 self.bridge.publish(self.topic_status, self.msg_state)
 
@@ -592,8 +676,41 @@ class LawnMowerEntity:
         """
         Supervisor loop handling the Smart Polling logic and BlueZ crash recovery.
         """
+        # --- Startup: Load cached static info and send HA Discovery without BLE ---
+        # This ensures all HA entities (incl. the Winter Mode switch) exist even if the
+        # mower is currently unreachable (e.g. switched off and stored for winter).
+        if self._load_static_info_cache() and not self.discovery_sent:
+            try:
+                self.bridge.publish_discovery(
+                    self.static_info.get("SerialNumber"),
+                    self.static_info.get("Model"),
+                    self.static_info.get("Manufacturer"),
+                    self.topic_status,
+                    self.topic_cmd,
+                )
+                self.discovery_sent = True
+                logger.info(
+                    f"[{self.name}] HA Discovery sent from cache (no BLE connection required)."
+                )
+            except Exception as e:
+                logger.warning(f"[{self.name}] Could not send discovery from cache: {e}")
+
         while True:
             try:
+                # --- Winter Mode: Skip all BLE operations ---
+                if self.winter_mode:
+                    sleep_time = self.config["system"]["poll_winter"]
+                    logger.info(
+                        f"[{self.name}] Winter Mode active. Sleeping for {sleep_time} seconds. Send WINTER_OFF to resume."
+                    )
+                    if self.topic_status:
+                        winter_payload = self.static_info.copy() if self.static_info else {}
+                        winter_payload["MowerActivity"] = "8"
+                        winter_payload["WinterMode"] = "ON"
+                        self.bridge.publish(self.topic_status, winter_payload)
+                    await asyncio.sleep(sleep_time)
+                    continue
+
                 # Create a new mower instance for each connection attempt to ensure a clean state
                 # Execute one clean Poll-Cycle (Connect -> Read -> Disconnect)
                 activity = await self.poll_mower_data()

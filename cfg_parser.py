@@ -86,6 +86,9 @@ class GardenaCfg:
                 "poll_error": int(
                     self.config.get("system", "poll_error", fallback="30")
                 ),
+                "poll_winter": int(
+                    self.config.get("system", "poll_winter", fallback="3600")
+                ),
             }
         )
 
