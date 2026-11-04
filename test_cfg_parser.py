@@ -65,3 +65,84 @@ def test_gardena_cfg_uses_defaults():
         assert result["mqtt"]["broker"] == "127.0.0.1"
         assert result["mqtt"]["topic_base"] == "gardena/automower"
         assert result["system"]["poll_idle"] == 900
+
+
+def _parse_dict(data):
+    """Helper: parses a config given as dict, without touching cfg.ini on disk."""
+    cfg_parser = GardenaCfg()
+    cfg_parser.config.read_dict(data)
+    with patch.object(cfg_parser.config, "read"):
+        return cfg_parser.parse()
+
+
+def test_gardena_cfg_system_defaults_complete():
+    """All system settings fall back to their documented defaults."""
+    result = _parse_dict({})
+
+    assert result["system"] == {
+        "log_level": "INFO",
+        "poll_active": 60,
+        "poll_idle": 900,
+        "poll_error": 30,
+        "poll_winter": 3600,
+    }
+    assert result["mqtt"]["port"] == "1883"
+
+
+def test_gardena_cfg_custom_system_values():
+    """Custom system values (incl. poll_winter) are parsed as integers."""
+    result = _parse_dict(
+        {
+            "system": {
+                "poll_active": "45",
+                "poll_idle": "600",
+                "poll_error": "15",
+                "poll_winter": "7200",
+            }
+        }
+    )
+
+    assert result["system"]["poll_active"] == 45
+    assert result["system"]["poll_idle"] == 600
+    assert result["system"]["poll_error"] == 15
+    assert result["system"]["poll_winter"] == 7200
+
+
+def test_gardena_cfg_log_level_is_uppercased():
+    """A lowercase log level is normalized, so getattr(logging, ...) works."""
+    result = _parse_dict({"system": {"log_level": "debug"}})
+
+    assert result["system"]["log_level"] == "DEBUG"
+
+
+def test_gardena_cfg_mower_fallbacks_per_key():
+    """Missing keys inside a mower section fall back individually."""
+    result = _parse_dict({"mower_front": {"address": "AA:BB:CC:DD:EE:FF"}})
+
+    assert len(result["mowers"]) == 1
+    mower = result["mowers"][0]
+    assert mower["id"] == "mower_front"
+    assert mower["name"] == "mower_front"  # name falls back to the section id
+    assert mower["address"] == "AA:BB:CC:DD:EE:FF"
+    assert mower["pin"] == "0000"
+
+
+def test_gardena_cfg_ignores_non_mower_sections():
+    """Only sections starting with 'mower' are treated as mowers."""
+    result = _parse_dict(
+        {
+            "mower_1": {"address": "AA:BB:CC:DD:EE:FF"},
+            "mqtt": {"broker": "10.0.0.1"},
+            "system": {},
+            "garden": {"address": "11:22:33:44:55:66"},
+        }
+    )
+
+    assert [m["id"] for m in result["mowers"]] == ["mower_1"]
+    assert result["mqtt"]["broker"] == "10.0.0.1"
+
+
+def test_gardena_cfg_invalid_integer_raises():
+    """Non-numeric poll intervals fail loudly instead of being silently ignored."""
+    with pytest.raises(ValueError):
+        _parse_dict({"system": {"poll_active": "fast"}})

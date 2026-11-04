@@ -25,7 +25,6 @@ class GardenaCfg:
     def __init__(self):
         """Initializes the GardenaCfg class by creating a ConfigParser instance."""
         self.config = configparser.ConfigParser()
-        return
 
     def parse(self):
         """
