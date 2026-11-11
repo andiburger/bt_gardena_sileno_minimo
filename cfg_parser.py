@@ -4,6 +4,7 @@ Author: __ABu__
 
 import configparser
 import logging
+import os
 
 from secrets_crypto import decrypt_secret, is_encrypted, load_key
 
@@ -57,6 +58,10 @@ class GardenaCfg:
         Encrypted secrets (mower PINs, MQTT password) are decrypted here.
         raises SecretError: If an encrypted secret cannot be decrypted.
         """
+        if os.path.exists("cfg.ini") and (os.stat("cfg.ini").st_mode & 0o077):
+            logger.warning(
+                "cfg.ini is readable by other users. Consider running: chmod 600 cfg.ini"
+            )
         self.config.read("cfg.ini")
         result = {"mowers": [], "mqtt": {}, "system": {}}
 

@@ -290,3 +290,13 @@ def test_secrets_crypto_cli_main(tmp_path, monkeypatch, capsys):
 def test_secrets_crypto_cli_empty_input_aborts(monkeypatch):
     monkeypatch.setattr("secrets_crypto.getpass.getpass", lambda _: "")
     assert secrets_crypto.main() == 1
+
+
+def test_gardena_cfg_warns_on_permissive_cfg_ini_mode(monkeypatch, caplog):
+    monkeypatch.setattr("cfg_parser.os.path.exists", lambda p: p == "cfg.ini")
+    fake_stat = type("Stat", (), {"st_mode": 0o100644})()
+    monkeypatch.setattr("cfg_parser.os.stat", lambda p: fake_stat)
+
+    _parse_dict({})
+
+    assert "cfg.ini is readable by other users" in caplog.text
