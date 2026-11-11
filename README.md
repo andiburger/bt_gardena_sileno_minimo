@@ -13,7 +13,8 @@ Based on the [AutoMower-BLE](https://github.com/alistair23/AutoMower-BLE) librar
 * **Home Assistant Auto-Discovery:** Connects once, and your mowers automatically appear in HA with all sensors (Battery, Activity, Next Start, Statistics) and controls (Start, Pause, Park).
 * **Preemptive Smart Polling:** To protect the mower's battery, the script does NOT keep a constant connection open. It calculates the exact next start time and wakes up automatically 60 seconds before the mower leaves the dock. (60s intervals while mowing, up to 15m while parked).
 * **Auto-Recovery:** Catches `BlueZ` zombie connections and library crashes gracefully without bringing down the service.
-* **❄️ Winter Mode:** When the mowing season is over and the mower is switched off and stored inside, activate Winter Mode via a Home Assistant switch. All Bluetooth polling stops, the mower shows as "Wintermodus" instead of an error, and the service idles quietly until spring.
+* **❄️ Winter Mode:** When the mowing season is over and the mower is switched off and stored inside, activate Winter Mode via a Home Assistant switch. All Bluetooth polling stops, the mower shows as "Wintermodus" instead of an error, and the state is persisted across restarts until spring.
+* **🛡️ Security & Physical Safety Hardening:** Supports encrypted PINs/passwords (`Fernet` AES-128-CBC + HMAC-SHA256), MQTT authentication & TLS, retained-command rejection, stop-command priority over queued starts, and validated schedule parameters.
 * **Fully Dockerized:** Includes a highly optimized, lightweight Debian-slim Dockerfile.
 
 ## ⚙️ Configuration (`cfg.ini`)
@@ -56,6 +57,8 @@ python secrets_crypto.py
 1. It prompts for your PIN or password (hidden input) and prints an encrypted `enc:...` token to paste into `cfg.ini`.
 2. On first run, it generates a key file `.gardena.key` (permissions `0600`, excluded via `.gitignore` and `.dockerignore`). You can also pass the key via the `GARDENA_SECRET_KEY` environment variable.
 3. Existing plaintext values in `cfg.ini` continue to work (with a log warning).
+4. Restrict permissions on `cfg.ini` as well (`chmod 600 cfg.ini`) — the service logs a warning if `cfg.ini` is readable by group/others.
+
 ## 🐳 Installation (Docker - Recommended)
 Since the container needs access to the host's Bluetooth hardware, you must mount the dbus and run it in privileged/host-network mode.
 ```bash
@@ -66,11 +69,12 @@ docker run -d \
   --net=host \
   --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  -v $(pwd)/cfg.ini:/app/cfg.ini \
+  -v $(pwd)/cfg.ini:/app/cfg.ini:ro \
+  -v $(pwd)/.gardena.key:/app/.gardena.key:ro \
   -v $(pwd)/.cache:/app/.cache \
   gardena-mqtt-bridge
-  ```
-  (Tip: We mount cfg.ini externally so you can change settings without rebuilding the container. The `.cache` mount keeps the mower info cache across container rebuilds, see [Winter Mode](#️-winter-mode)).
+```
+(Tip: We mount `cfg.ini` and `.gardena.key` externally so you can change settings without rebuilding the container — or pass `-e GARDENA_SECRET_KEY=...` instead of mounting `.gardena.key`. The `.cache` mount keeps the mower info cache and Winter Mode state across container rebuilds, see [Winter Mode](#️-winter-mode)).
 
 ## 🐍 Installation (Bare Metal / systemd)
 
@@ -154,10 +158,10 @@ mosquitto_pub -h <broker_ip> -t "gardena/automower/mower_1/cmd" -m "WINTER_ON"
 mosquitto_pub -h <broker_ip> -t "gardena/automower/mower_1/cmd" -m "WINTER_OFF"
 ```
 
-> **Note:** Winter Mode state is held in memory. If the service restarts, it defaults back to normal mode. This is intentional — if your Pi reboots in spring, it will automatically resume polling without manual intervention.
+> **Note:** Winter Mode state is persisted in `.cache/<MAC>.json`. If the service or Raspberry Pi restarts during winter, the mower stays safely in Winter Mode without triggering Bluetooth scans or error states.
 
 ### Mower info cache (Discovery without Bluetooth)
-Home Assistant needs the mower's serial number, model and manufacturer to create its entities (including the ❄️ switch). These values can only be read via Bluetooth. To make discovery work even when the mower is switched off, the bridge saves them to a small cache file after the **first successful Bluetooth connection**:
+Home Assistant needs the mower's serial number, model and manufacturer to create its entities (including the ❄️ switch). These values can only be read via Bluetooth. To make discovery work even when the mower is switched off, the bridge saves them (along with the current `WinterMode` state) to a small cache file after the **first successful Bluetooth connection**:
 
 ```
 .cache/
@@ -174,7 +178,18 @@ In this case, activate Winter Mode manually once after the update:
 ```bash
 mosquitto_pub -h <broker_ip> -t "gardena/automower/mower_1/cmd" -m "WINTER_ON"
 ```
-In spring, switch the mower back on and send `WINTER_OFF` (or simply restart the service). The bridge connects, creates the cache file, and the ❄️ switch appears in Home Assistant. From then on, everything works from Home Assistant, even when the mower is unreachable.
+This persists the Winter Mode flag in `.cache/<MAC>.json` right away. In spring, switch the mower back on and send `WINTER_OFF`. The bridge connects, saves the hardware info to the cache file, and the ❄️ switch appears in Home Assistant. From then on, everything works from Home Assistant, even when the mower is unreachable.
+
+## 🛡️ Security & Physical Safety
+Because a robotic lawnmower is a physical machine with rotating blades, the bridge includes several security and physical safety safeguards:
+
+* **Encrypted Secrets (`secrets_crypto.py`):** Mower PINs and MQTT passwords can be stored encrypted (`enc:...` via `Fernet` AES-128-CBC + HMAC-SHA256) using a local `.gardena.key` file (`0600`) or `GARDENA_SECRET_KEY` environment variable.
+* **MQTT Authentication & TLS:** Supports optional broker `username`/`password` authentication and TLS encryption (`tls = true`, custom `ca_certs`).
+* **Retained Command Protection:** Any MQTT command message arriving with the `retain` flag set (`retain=True`) is rejected and ignored. This guarantees that a stale retained `START` message on the broker can never unexpectedly launch the mower when the service or broker restarts.
+* **Stop/Pause Priority (Emergency Abort):** Because BLE operations are serialized via a lock, a `START` command may briefly wait while a status poll finishes. If a `PAUSE`, `PARK`, or `WINTER_ON` command arrives in the meantime, any queued `START` is immediately aborted before it reaches the mower, and only the stop/park command is executed.
+* **Persistent Winter Mode:** Activating `WINTER_ON` persists across container/service restarts in `.cache/<MAC>.json`, ensuring the bridge stays silent and blocks movement commands until `WINTER_OFF` is explicitly sent.
+* **Schedule Validation (`ADD_TASK`):** Schedule parameters (`ADD_TASK:day:start:duration:use_b`) are validated for exact format and bounded to `1..1440` minutes (max 24 hours).
+* **Multi-Mower Discovery Isolation:** When multiple mowers are configured, Home Assistant Auto-Discovery topics are automatically scoped by serial number (`gardena_minimo_<serial>`) so mowers never overwrite each other's entities.
 
 ## 🛠 Troubleshooting: Bluetooth Pairing
 Gardena mowers require an OS-level confirmation for the very first pairing.
