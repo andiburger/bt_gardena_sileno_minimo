@@ -1,5 +1,8 @@
+import os
 import pytest
 import asyncio
+
+_real_sleep = asyncio.sleep
 import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -266,7 +269,10 @@ async def test_process_command_add_task_valid(mock_scan, mower):
         "ADD_TASK:2,24,30,90",  # hour out of range
         "ADD_TASK:2,9,60,90",  # minute out of range
         "ADD_TASK:2,9,30,0",  # duration must be > 0
+        "ADD_TASK:2,9,30,1441",  # duration must be <= 1440 (24h)
         "ADD_TASK:a,b,c,d",  # non-numeric
+        "ADD_TASK:1,2",  # too few parameters
+        "ADD_TASK:1,2,3,4,5",  # too many parameters
     ],
 )
 @patch("gardena.BleakScanner.find_device_by_address", new_callable=AsyncMock)
@@ -883,3 +889,137 @@ def test_bridge_stop_disconnects(connected_bridge):
 
     client.loop_stop.assert_called_once()
     client.disconnect.assert_called_once()
+
+
+# --- 13. SECURITY HARDENING TESTS ---
+
+
+def test_bridge_init_does_not_leak_secrets_to_stdout(mock_config, capsys):
+    mock_config["mowers"][0]["pin"] = "9876"
+    mock_config["mqtt"]["password"] = "top-secret-pw"
+
+    bridge = GardenaMQTTBridge(mock_config)
+    captured = capsys.readouterr()
+
+    assert "9876" not in captured.out
+    assert "top-secret-pw" not in captured.out
+    assert bridge.client_id.startswith("gardena-bridge-")
+
+
+def test_connect_mqtt_sets_credentials_and_tls(mock_config):
+    mock_config["mqtt"]["username"] = "gardena_user"
+    mock_config["mqtt"]["password"] = "secret"
+    mock_config["mqtt"]["tls"] = True
+    mock_config["mqtt"]["ca_certs"] = "/etc/ssl/ca.pem"
+    bridge = GardenaMQTTBridge(mock_config)
+
+    with patch("gardena.mqtt_client.Client") as client_cls:
+        bridge.connect_mqtt()
+        client = client_cls.return_value
+
+    assert client.suppress_exceptions is True
+    client.username_pw_set.assert_called_once_with("gardena_user", "secret")
+    client.tls_set.assert_called_once_with(ca_certs="/etc/ssl/ca.pem")
+
+
+def test_on_message_survives_invalid_utf8_and_callback_errors(
+    connected_bridge, monkeypatch
+):
+    bridge, client = connected_bridge
+    m1 = MagicMock(topic_cmd="t/mower_1/cmd")
+    bridge.mowers = {"mower_1": m1}
+    monkeypatch.setattr("gardena.loop", object())
+    run_threadsafe = MagicMock(side_effect=RuntimeError("loop closed"))
+    monkeypatch.setattr("gardena.asyncio.run_coroutine_threadsafe", run_threadsafe)
+
+    # Invalid UTF-8 bytes and an exception inside run_coroutine_threadsafe must both be caught
+    client.on_message(
+        client, None, MagicMock(topic="t/mower_1/cmd", payload=b"\xff\xfeSTART")
+    )
+    run_threadsafe.assert_called_once()
+
+
+def test_on_message_ignores_retained_commands(connected_bridge, monkeypatch):
+    """Safety: A retained START message on the broker must never trigger mower movement on reconnect."""
+    bridge, client = connected_bridge
+    m1 = MagicMock(topic_cmd="t/mower_1/cmd")
+    bridge.mowers = {"mower_1": m1}
+    monkeypatch.setattr("gardena.loop", object())
+    run_threadsafe = MagicMock()
+    monkeypatch.setattr("gardena.asyncio.run_coroutine_threadsafe", run_threadsafe)
+
+    client.on_message(
+        client,
+        None,
+        MagicMock(topic="t/mower_1/cmd", payload=b"START", retain=True),
+    )
+
+    m1.process_command.assert_not_called()
+    run_threadsafe.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("gardena.BleakScanner.find_device_by_address", new_callable=AsyncMock)
+async def test_stop_command_aborts_queued_start_command(mock_scan, mower):
+    """Safety: If PAUSE/PARK arrives while START is waiting on ble_lock, START must abort."""
+    mock_scan.return_value = MagicMock()
+
+    async with gardena.ble_lock:
+        # Queue START while ble_lock is busy (e.g. during a poll), then immediately queue PAUSE
+        start_task = asyncio.create_task(mower.process_command("START"))
+        await _real_sleep(0)  # let start_task reach 'async with ble_lock:'
+        pause_task = asyncio.create_task(mower.process_command("PAUSE"))
+        await _real_sleep(0)  # let pause_task set _abort_start = True
+
+    await asyncio.gather(start_task, pause_task)
+
+    mower.m.mower_override.assert_not_called()
+    mower.m.command.assert_called_once_with("Pause")
+
+
+@pytest.mark.asyncio
+async def test_winter_mode_persisted_in_cache_across_restarts(
+    mower, mock_config, bridge
+):
+    """Safety: WinterMode state survives a service restart via the cache file."""
+    mower.static_info = {
+        "Model": "Minimo",
+        "Manufacturer": "Gardena",
+        "SerialNumber": 7,
+    }
+    await mower.process_command("WINTER_ON")
+
+    restarted = LawnMowerEntity("Minimo", "AA:BB:CC:DD:EE:FF", 0, bridge, mock_config)
+    assert restarted._load_static_info_cache() is True
+    assert restarted.winter_mode is True
+    assert restarted.static_info == mower.static_info
+
+    # Turning winter mode off clears the persisted flag again
+    await mower.process_command("WINTER_OFF")
+    restarted2 = LawnMowerEntity("Minimo", "AA:BB:CC:DD:EE:FF", 0, bridge, mock_config)
+    assert restarted2._load_static_info_cache() is True
+    assert restarted2.winter_mode is False
+
+
+def test_cache_load_non_dict_json_returns_false(mower, isolated_cache_dir):
+    isolated_cache_dir.mkdir()
+    (isolated_cache_dir / "AA_BB_CC_DD_EE_FF.json").write_text("[1, 2, 3]")
+
+    assert mower._load_static_info_cache() is False
+
+
+def test_cache_path_sanitizes_path_traversal(mock_config, bridge, isolated_cache_dir):
+    evil = LawnMowerEntity("Evil", "../../etc/passwd", 0, bridge, mock_config)
+    path = evil._cache_path()
+
+    assert os.path.dirname(path) == str(isolated_cache_dir)
+    assert ".." not in os.path.basename(path)
+
+
+def test_publish_discovery_multi_mower_uses_unique_node_id(bridge):
+    """Safety: With multiple mowers, discovery topics are scoped by serial_number so they don't overwrite each other."""
+    bridge.mowers = {"mower_1": MagicMock(), "mower_2": MagicMock()}
+    bridge.publish_discovery("999", "Minimo", "Gardena", "state/t", "cmd/t")
+
+    topics = [c.args[0] for c in bridge.client.publish.call_args_list]
+    assert "homeassistant/lawn_mower/gardena_minimo_999/mower/config" in topics

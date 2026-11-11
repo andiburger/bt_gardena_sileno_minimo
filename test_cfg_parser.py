@@ -1,6 +1,16 @@
+import os
 import pytest
+from cryptography.fernet import Fernet
 from unittest.mock import patch
 from cfg_parser import GardenaCfg
+import secrets_crypto
+from secrets_crypto import (
+    SecretError,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted,
+    load_key,
+)
 
 
 def test_gardena_cfg_parse_success():
@@ -146,3 +156,147 @@ def test_gardena_cfg_invalid_integer_raises():
     """Non-numeric poll intervals fail loudly instead of being silently ignored."""
     with pytest.raises(ValueError):
         _parse_dict({"system": {"poll_active": "fast"}})
+
+
+# --- ENCRYPTION & SECRET HANDLING TESTS ---
+
+
+def test_encrypt_and_decrypt_secret_roundtrip():
+    key = Fernet.generate_key()
+    encrypted = encrypt_secret("1234", key)
+
+    assert is_encrypted(encrypted)
+    assert encrypted.startswith("enc:")
+    assert "1234" not in encrypted
+    assert decrypt_secret(encrypted, key) == "1234"
+
+
+def test_encrypt_empty_secret_raises():
+    key = Fernet.generate_key()
+    with pytest.raises(ValueError):
+        encrypt_secret("", key)
+
+
+def test_decrypt_plaintext_returns_unchanged():
+    assert decrypt_secret("1234") == "1234"
+    assert decrypt_secret(None) is None
+
+
+def test_decrypt_wrong_key_raises_secret_error():
+    key1 = Fernet.generate_key()
+    key2 = Fernet.generate_key()
+    token = encrypt_secret("1234", key1)
+
+    with pytest.raises(SecretError):
+        decrypt_secret(token, key2)
+
+
+def test_decrypt_corrupted_token_raises_secret_error():
+    key = Fernet.generate_key()
+    with pytest.raises(SecretError):
+        decrypt_secret("enc:not-a-valid-fernet-token", key)
+
+
+def test_decrypt_loads_key_automatically(monkeypatch):
+    key = Fernet.generate_key()
+    monkeypatch.setenv("GARDENA_SECRET_KEY", key.decode())
+    token = encrypt_secret("9876", key)
+
+    assert decrypt_secret(token) == "9876"
+
+
+def test_load_key_creates_and_reloads_file_with_0600(tmp_path, monkeypatch):
+    monkeypatch.delenv("GARDENA_SECRET_KEY", raising=False)
+    key_file = tmp_path / ".gardena.key"
+    monkeypatch.setenv("GARDENA_KEY_FILE", str(key_file))
+
+    created_key = load_key(create=True)
+    assert key_file.exists()
+    assert (key_file.stat().st_mode & 0o777) == 0o600
+    assert load_key(create=False) == created_key
+
+
+def test_load_key_warns_on_permissive_file_mode(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("GARDENA_SECRET_KEY", raising=False)
+    key_file = tmp_path / ".gardena.key"
+    key_file.write_bytes(Fernet.generate_key())
+    os.chmod(key_file, 0o644)
+    monkeypatch.setenv("GARDENA_KEY_FILE", str(key_file))
+
+    load_key(create=False)
+    assert "readable by other users" in caplog.text
+
+
+def test_load_key_missing_raises_secret_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("GARDENA_SECRET_KEY", raising=False)
+    monkeypatch.setenv("GARDENA_KEY_FILE", str(tmp_path / "missing.key"))
+
+    with pytest.raises(SecretError):
+        load_key(create=False)
+
+
+def test_gardena_cfg_decrypts_encrypted_pins_and_mqtt_password(monkeypatch):
+    key = Fernet.generate_key()
+    monkeypatch.setenv("GARDENA_SECRET_KEY", key.decode())
+    enc_pin_1 = encrypt_secret("1234", key)
+    enc_pin_2 = encrypt_secret("5678", key)
+    enc_pw = encrypt_secret("my-mqtt-pass", key)
+
+    result = _parse_dict(
+        {
+            "mower_1": {
+                "name": "Front",
+                "address": "AA:BB:CC:DD:EE:FF",
+                "pin": enc_pin_1,
+            },
+            "mower_2": {
+                "name": "Back",
+                "address": "11:22:33:44:55:66",
+                "pin": enc_pin_2,
+            },
+            "mqtt": {
+                "broker": "192.168.1.100",
+                "username": "gardena_user",
+                "password": enc_pw,
+                "tls": "true",
+                "ca_certs": "/etc/ssl/cert.pem",
+            },
+        }
+    )
+
+    assert result["mowers"][0]["pin"] == "1234"
+    assert result["mowers"][1]["pin"] == "5678"
+    assert result["mqtt"]["username"] == "gardena_user"
+    assert result["mqtt"]["password"] == "my-mqtt-pass"
+    assert result["mqtt"]["tls"] is True
+    assert result["mqtt"]["ca_certs"] == "/etc/ssl/cert.pem"
+
+
+def test_secrets_crypto_cli_main(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("GARDENA_SECRET_KEY", raising=False)
+    key_file = tmp_path / ".gardena.key"
+    monkeypatch.setenv("GARDENA_KEY_FILE", str(key_file))
+    monkeypatch.setattr("secrets_crypto.getpass.getpass", lambda _: "4321")
+
+    rc = secrets_crypto.main()
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    token = captured.out.strip()
+    assert token.startswith("enc:")
+    assert decrypt_secret(token) == "4321"
+
+
+def test_secrets_crypto_cli_empty_input_aborts(monkeypatch):
+    monkeypatch.setattr("secrets_crypto.getpass.getpass", lambda _: "")
+    assert secrets_crypto.main() == 1
+
+
+def test_gardena_cfg_warns_on_permissive_cfg_ini_mode(monkeypatch, caplog):
+    monkeypatch.setattr("cfg_parser.os.path.exists", lambda p: p == "cfg.ini")
+    fake_stat = type("Stat", (), {"st_mode": 0o100644})()
+    monkeypatch.setattr("cfg_parser.os.stat", lambda p: fake_stat)
+
+    _parse_dict({})
+
+    assert "cfg.ini is readable by other users" in caplog.text

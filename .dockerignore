@@ -1,6 +1,17 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
 .env
 config.yaml
 *.db
+cfg.ini
+mycfg.inicfg.ini
+.gardena.key
+.cache/
+.git/
+.github/
+.pytest_cache/
+.coverage*
+coverage.xml
+test_*.py

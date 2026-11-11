@@ -16,6 +16,8 @@ from cfg_parser import GardenaCfg
 import logging
 import subprocess
 import os
+import re
+import socket
 
 # --- Configuration & Logging ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
@@ -44,16 +46,22 @@ class GardenaMQTTBridge:
     """
 
     def __init__(self, config: dict):
-        print(f"DEBUG: Geladene Config: {config}")
+        # Never log the config: it contains the decrypted mower PINs and MQTT password
         self.config = config
         mqtt_cfg = config.get("mqtt", {})
         self.broker = mqtt_cfg.get("broker")
         self.port = int(mqtt_cfg.get("port", 1883))
+        self.username = mqtt_cfg.get("username")
+        self.password = mqtt_cfg.get("password")
+        self.tls = bool(mqtt_cfg.get("tls", False))
+        self.ca_certs = mqtt_cfg.get("ca_certs")
 
         if not self.broker or not self.port:
             raise ValueError("MQTT broker address and port must be set in cfg.ini!")
 
-        self.client_id = f"publish-{random.randint(0, 1000)}"
+        # Stable, host-specific client ID. Random IDs from a small range could collide with
+        # other clients, and the broker disconnects the older client on a collision.
+        self.client_id = f"gardena-bridge-{socket.gethostname()}"
         self.mowers = {}
         self.client = None
 
@@ -81,30 +89,48 @@ class GardenaMQTTBridge:
                 logger.error(f"Failed to connect, return code {reason_code}")
 
         def on_message(client, userdata, incoming_msg):
-            payload = incoming_msg.payload.decode("utf-8")
-            incoming_topic = incoming_msg.topic
-            logger.info(f"Command received on {incoming_topic}: {payload}")
-
-            for m_id, mower_obj in self.mowers.items():
-                if (
-                    hasattr(mower_obj, "topic_cmd")
-                    and incoming_topic == mower_obj.topic_cmd
+            try:
+                payload = incoming_msg.payload.decode("utf-8", errors="replace")
+                incoming_topic = incoming_msg.topic
+                # Safety: Never execute retained commands (e.g. a stale retained START on reconnect)
+                retain_flag = getattr(incoming_msg, "retain", False)
+                if retain_flag is True or (
+                    type(retain_flag) is int and retain_flag == 1
                 ):
-                    if loop is not None:
-                        asyncio.run_coroutine_threadsafe(
-                            mower_obj.process_command(payload), loop
-                        )
-                    else:
-                        logger.error(
-                            "Critical: Asyncio loop not initialized. Cannot process command."
-                        )
-                    break
+                    logger.warning(
+                        f"Safety: Ignoring retained command message on {incoming_topic}: {payload!r}"
+                    )
+                    return
+
+                logger.info(f"Command received on {incoming_topic}: {payload!r}")
+
+                for m_id, mower_obj in self.mowers.items():
+                    if (
+                        hasattr(mower_obj, "topic_cmd")
+                        and incoming_topic == mower_obj.topic_cmd
+                    ):
+                        if loop is not None:
+                            asyncio.run_coroutine_threadsafe(
+                                mower_obj.process_command(payload), loop
+                            )
+                        else:
+                            logger.error(
+                                "Critical: Asyncio loop not initialized. Cannot process command."
+                            )
+                        break
+            except Exception as e:
+                logger.error(f"Error handling incoming MQTT message: {e}")
 
         self.client = mqtt_client.Client(
             mqtt_client.CallbackAPIVersion.VERSION2, client_id=self.client_id
         )
+        self.client.suppress_exceptions = True
         self.client.on_connect = on_connect
         self.client.on_message = on_message
+        if self.username:
+            self.client.username_pw_set(self.username, self.password)
+        if self.tls:
+            self.client.tls_set(ca_certs=self.ca_certs)
         if self.broker is None or self.port is None:  # pragma: no cover
             raise ValueError(
                 "MQTT broker address and port must be set before connecting."
@@ -345,7 +371,19 @@ class GardenaMQTTBridge:
             ),
         ]
 
+        # For single-mower setups, keep 'gardena_minimo' for full backwards compatibility with
+        # existing Home Assistant discovery topics; for multi-mower setups, scope by serial_number
+        # so mowers never overwrite each other's discovery topics.
+        node_id = (
+            f"gardena_minimo_{serial_number}"
+            if len(self.mowers) > 1
+            else "gardena_minimo"
+        )
         for topic_suffix, payload in discovery_messages:
+            if node_id != "gardena_minimo":
+                topic_suffix = topic_suffix.replace(
+                    "/gardena_minimo/", f"/{node_id}/", 1
+                )
             full_topic = f"homeassistant/{topic_suffix}"
             self.client.publish(full_topic, json.dumps(payload), retain=True)
 
@@ -377,6 +415,7 @@ class LawnMowerEntity:
         self.discovery_sent = False
         self.error_counter = 0
         self.winter_mode = False
+        self._abort_start = False
         self.topic_status = None
         self.topic_cmd = None
         # instance of the mower will be created on demand in the command processing to ensure a clean state for each connection
@@ -384,29 +423,37 @@ class LawnMowerEntity:
 
     def _cache_path(self):
         """Returns the path to the cache file for this mower, based on its BLE address."""
-        safe_address = self.address.replace(":", "_")
+        safe_address = re.sub(r"[^0-9A-Za-z_-]", "_", self.address.replace(":", "_"))
         return os.path.join(CACHE_DIR, f"{safe_address}.json")
 
     def _save_static_info_cache(self):
-        """Saves static_info to a JSON cache file on disk."""
+        """Saves static_info (and WinterMode state if active) to a JSON cache file on disk."""
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
+            data = self.static_info.copy() if self.static_info else {}
+            if self.winter_mode:
+                data["WinterMode"] = True
             with open(self._cache_path(), "w") as f:
-                json.dump(self.static_info, f, indent=2)
+                json.dump(data, f, indent=2)
             logger.info(f"[{self.name}] Static info cached to {self._cache_path()}")
         except Exception as e:
             logger.warning(f"[{self.name}] Could not write cache file: {e}")
 
     def _load_static_info_cache(self):
-        """Loads static_info from the JSON cache file, if it exists. Returns True on success."""
+        """Loads static_info (and persisted WinterMode) from the JSON cache file. Returns True if static_info was loaded."""
         cache_file = self._cache_path()
         if not os.path.exists(cache_file):
             return False
         try:
             with open(cache_file, "r") as f:
-                self.static_info = json.load(f)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return False
+            if data.pop("WinterMode", False):
+                self.winter_mode = True
+            self.static_info = data
             logger.info(f"[{self.name}] Loaded cached static info from {cache_file}")
-            return True
+            return bool(self.static_info)
         except Exception as e:
             logger.warning(f"[{self.name}] Could not read cache file: {e}")
             return False
@@ -424,7 +471,9 @@ class LawnMowerEntity:
             logger.info(
                 f"[{self.name}] Activating Winter Mode. All BLE polling stopped."
             )
+            self._abort_start = True
             self.winter_mode = True
+            self._save_static_info_cache()
             if self.topic_status:
                 winter_payload = self.static_info.copy() if self.static_info else {}
                 winter_payload["MowerActivity"] = "8"
@@ -437,6 +486,8 @@ class LawnMowerEntity:
                 f"[{self.name}] Deactivating Winter Mode. Resuming normal BLE polling."
             )
             self.winter_mode = False
+            if self.static_info or os.path.exists(self._cache_path()):
+                self._save_static_info_cache()
             if self.topic_status:
                 resume_payload = self.static_info.copy() if self.static_info else {}
                 resume_payload["MowerActivity"] = "0"
@@ -451,29 +502,41 @@ class LawnMowerEntity:
             )
             return
 
+        if payload in ("PAUSE", "PARK"):
+            self._abort_start = True
+        elif payload == "START":
+            self._abort_start = False
+
         if payload.startswith("ADD_TASK:"):
             try:
-                _, params = payload.split(":")
+                _, params = payload.split(":", 1)
                 p = params.split(",")
+                if len(p) != 4:
+                    raise ValueError("Expected 4 comma-separated parameters")
                 day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
                 if (
                     not (0 <= day_idx <= 6)
                     or not (0 <= h <= 23)
                     or not (0 <= m_start <= 59)
-                    or dur <= 0
+                    or not (0 < dur <= 1440)
                 ):
                     logger.error(
                         f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
                     )
                     return
-            except ValueError:
+            except (ValueError, IndexError):
                 logger.error(
-                    f"Invalid payload format (non-numeric values detected): {payload}"
+                    f"Invalid payload format (non-numeric or missing values detected): {payload!r}"
                 )
                 return
 
         # Request the Bluetooth lock to ensure no polling interferes
         async with ble_lock:
+            if payload == "START" and self._abort_start:
+                logger.warning(
+                    f"[{self.name}] Safety: Queued START command aborted because a stop/pause command was received in the meantime."
+                )
+                return
             try:
                 logger.info("Command execution: Scanning for mower...")
                 device = await BleakScanner.find_device_by_address(

@@ -1,3 +1,4 @@
 automower_ble
 bleak==0.22.3
 paho-mqtt==2.1.0
+cryptography>=44.0.0
