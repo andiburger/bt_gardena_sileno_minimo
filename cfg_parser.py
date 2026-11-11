@@ -3,6 +3,11 @@ Author: __ABu__
 """
 
 import configparser
+import logging
+
+from secrets_crypto import decrypt_secret, is_encrypted, load_key
+
+logger = logging.getLogger(__name__)
 
 
 class GardenaCfg:
@@ -25,11 +30,32 @@ class GardenaCfg:
     def __init__(self):
         """Initializes the GardenaCfg class by creating a ConfigParser instance."""
         self.config = configparser.ConfigParser()
+        self._key = None
+
+    def _secret(self, section, option, value):
+        """
+        Returns the decrypted value of an encrypted secret (enc:...).
+        Plaintext secrets are accepted for backwards compatibility, but trigger a warning.
+        The key is only loaded once, and only if an encrypted value is actually present.
+        """
+        if not value:
+            return value
+        if not is_encrypted(value):
+            logger.warning(
+                f"[{section}] {option} is stored in plaintext in cfg.ini. "
+                f"Encrypt it with: python secrets_crypto.py"
+            )
+            return value
+        if self._key is None:
+            self._key = load_key()
+        return decrypt_secret(value, self._key)
 
     def parse(self):
         """
         Parses the configuration file (cfg.ini) and extracts the necessary information.
         If keys are missing, safe fallback defaults are provided to prevent crashes.
+        Encrypted secrets (mower PINs, MQTT password) are decrypted here.
+        raises SecretError: If an encrypted secret cannot be decrypted.
         """
         self.config.read("cfg.ini")
         result = {"mowers": [], "mqtt": {}, "system": {}}
@@ -44,7 +70,11 @@ class GardenaCfg:
                         "address": self.config.get(
                             section, "address", fallback="00:00:00:00:00:00"
                         ),
-                        "pin": self.config.get(section, "pin", fallback="0000"),
+                        "pin": self._secret(
+                            section,
+                            "pin",
+                            self.config.get(section, "pin", fallback="0000"),
+                        ),
                     }
                 )
         # fallback for no mowers defined at all - we add a default mower to ensure the rest of the system can still function and be tested without a cfg.ini
@@ -67,6 +97,15 @@ class GardenaCfg:
                 "topic_base": self.config.get(
                     "mqtt", "topic_base", fallback="gardena/automower"
                 ),
+                # --- Optional broker authentication & encryption ---
+                "username": self.config.get("mqtt", "username", fallback=None),
+                "password": self._secret(
+                    "mqtt",
+                    "password",
+                    self.config.get("mqtt", "password", fallback=None),
+                ),
+                "tls": self.config.getboolean("mqtt", "tls", fallback=False),
+                "ca_certs": self.config.get("mqtt", "ca_certs", fallback=None),
             }
         )
 
@@ -95,8 +134,13 @@ class GardenaCfg:
 
 
 # just for test purposes
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     gardenaCfg = GardenaCfg()
     res = gardenaCfg.parse()
+    # Never print decrypted secrets
+    for mower_cfg in res["mowers"]:
+        mower_cfg["pin"] = "****"
+    if res["mqtt"]["password"]:
+        res["mqtt"]["password"] = "****"
     print("Parsed Config with Defaults:")
     print(res)

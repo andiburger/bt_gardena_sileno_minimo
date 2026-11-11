@@ -16,6 +16,7 @@ from cfg_parser import GardenaCfg
 import logging
 import subprocess
 import os
+import socket
 
 # --- Configuration & Logging ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
@@ -44,16 +45,22 @@ class GardenaMQTTBridge:
     """
 
     def __init__(self, config: dict):
-        print(f"DEBUG: Geladene Config: {config}")
+        # Never log the config: it contains the decrypted mower PINs and MQTT password
         self.config = config
         mqtt_cfg = config.get("mqtt", {})
         self.broker = mqtt_cfg.get("broker")
         self.port = int(mqtt_cfg.get("port", 1883))
+        self.username = mqtt_cfg.get("username")
+        self.password = mqtt_cfg.get("password")
+        self.tls = bool(mqtt_cfg.get("tls", False))
+        self.ca_certs = mqtt_cfg.get("ca_certs")
 
         if not self.broker or not self.port:
             raise ValueError("MQTT broker address and port must be set in cfg.ini!")
 
-        self.client_id = f"publish-{random.randint(0, 1000)}"
+        # Stable, host-specific client ID. Random IDs from a small range could collide with
+        # other clients, and the broker disconnects the older client on a collision.
+        self.client_id = f"gardena-bridge-{socket.gethostname()}"
         self.mowers = {}
         self.client = None
 
@@ -81,30 +88,38 @@ class GardenaMQTTBridge:
                 logger.error(f"Failed to connect, return code {reason_code}")
 
         def on_message(client, userdata, incoming_msg):
-            payload = incoming_msg.payload.decode("utf-8")
-            incoming_topic = incoming_msg.topic
-            logger.info(f"Command received on {incoming_topic}: {payload}")
+            try:
+                payload = incoming_msg.payload.decode("utf-8", errors="replace")
+                incoming_topic = incoming_msg.topic
+                logger.info(f"Command received on {incoming_topic}: {payload!r}")
 
-            for m_id, mower_obj in self.mowers.items():
-                if (
-                    hasattr(mower_obj, "topic_cmd")
-                    and incoming_topic == mower_obj.topic_cmd
-                ):
-                    if loop is not None:
-                        asyncio.run_coroutine_threadsafe(
-                            mower_obj.process_command(payload), loop
-                        )
-                    else:
-                        logger.error(
-                            "Critical: Asyncio loop not initialized. Cannot process command."
-                        )
-                    break
+                for m_id, mower_obj in self.mowers.items():
+                    if (
+                        hasattr(mower_obj, "topic_cmd")
+                        and incoming_topic == mower_obj.topic_cmd
+                    ):
+                        if loop is not None:
+                            asyncio.run_coroutine_threadsafe(
+                                mower_obj.process_command(payload), loop
+                            )
+                        else:
+                            logger.error(
+                                "Critical: Asyncio loop not initialized. Cannot process command."
+                            )
+                        break
+            except Exception as e:
+                logger.error(f"Error handling incoming MQTT message: {e}")
 
         self.client = mqtt_client.Client(
             mqtt_client.CallbackAPIVersion.VERSION2, client_id=self.client_id
         )
+        self.client.suppress_exceptions = True
         self.client.on_connect = on_connect
         self.client.on_message = on_message
+        if self.username:
+            self.client.username_pw_set(self.username, self.password)
+        if self.tls:
+            self.client.tls_set(ca_certs=self.ca_certs)
         if self.broker is None or self.port is None:  # pragma: no cover
             raise ValueError(
                 "MQTT broker address and port must be set before connecting."
@@ -453,8 +468,10 @@ class LawnMowerEntity:
 
         if payload.startswith("ADD_TASK:"):
             try:
-                _, params = payload.split(":")
+                _, params = payload.split(":", 1)
                 p = params.split(",")
+                if len(p) != 4:
+                    raise ValueError("Expected 4 comma-separated parameters")
                 day_idx, h, m_start, dur = int(p[0]), int(p[1]), int(p[2]), int(p[3])
                 if (
                     not (0 <= day_idx <= 6)
@@ -466,9 +483,9 @@ class LawnMowerEntity:
                         f"Invalid parameters for schedule: Day={day_idx}, Time={h}:{m_start}, Duration={dur}. Aborting!"
                     )
                     return
-            except ValueError:
+            except (ValueError, IndexError):
                 logger.error(
-                    f"Invalid payload format (non-numeric values detected): {payload}"
+                    f"Invalid payload format (non-numeric or missing values detected): {payload!r}"
                 )
                 return
 

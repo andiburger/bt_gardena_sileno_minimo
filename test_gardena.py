@@ -267,6 +267,8 @@ async def test_process_command_add_task_valid(mock_scan, mower):
         "ADD_TASK:2,9,60,90",  # minute out of range
         "ADD_TASK:2,9,30,0",  # duration must be > 0
         "ADD_TASK:a,b,c,d",  # non-numeric
+        "ADD_TASK:1,2",  # too few parameters
+        "ADD_TASK:1,2,3,4,5",  # too many parameters
     ],
 )
 @patch("gardena.BleakScanner.find_device_by_address", new_callable=AsyncMock)
@@ -883,3 +885,51 @@ def test_bridge_stop_disconnects(connected_bridge):
 
     client.loop_stop.assert_called_once()
     client.disconnect.assert_called_once()
+
+
+# --- 13. SECURITY HARDENING TESTS ---
+
+
+def test_bridge_init_does_not_leak_secrets_to_stdout(mock_config, capsys):
+    mock_config["mowers"][0]["pin"] = "9876"
+    mock_config["mqtt"]["password"] = "top-secret-pw"
+
+    bridge = GardenaMQTTBridge(mock_config)
+    captured = capsys.readouterr()
+
+    assert "9876" not in captured.out
+    assert "top-secret-pw" not in captured.out
+    assert bridge.client_id.startswith("gardena-bridge-")
+
+
+def test_connect_mqtt_sets_credentials_and_tls(mock_config):
+    mock_config["mqtt"]["username"] = "gardena_user"
+    mock_config["mqtt"]["password"] = "secret"
+    mock_config["mqtt"]["tls"] = True
+    mock_config["mqtt"]["ca_certs"] = "/etc/ssl/ca.pem"
+    bridge = GardenaMQTTBridge(mock_config)
+
+    with patch("gardena.mqtt_client.Client") as client_cls:
+        bridge.connect_mqtt()
+        client = client_cls.return_value
+
+    assert client.suppress_exceptions is True
+    client.username_pw_set.assert_called_once_with("gardena_user", "secret")
+    client.tls_set.assert_called_once_with(ca_certs="/etc/ssl/ca.pem")
+
+
+def test_on_message_survives_invalid_utf8_and_callback_errors(
+    connected_bridge, monkeypatch
+):
+    bridge, client = connected_bridge
+    m1 = MagicMock(topic_cmd="t/mower_1/cmd")
+    bridge.mowers = {"mower_1": m1}
+    monkeypatch.setattr("gardena.loop", object())
+    run_threadsafe = MagicMock(side_effect=RuntimeError("loop closed"))
+    monkeypatch.setattr("gardena.asyncio.run_coroutine_threadsafe", run_threadsafe)
+
+    # Invalid UTF-8 bytes and an exception inside run_coroutine_threadsafe must both be caught
+    client.on_message(
+        client, None, MagicMock(topic="t/mower_1/cmd", payload=b"\xff\xfeSTART")
+    )
+    run_threadsafe.assert_called_once()

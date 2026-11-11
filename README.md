@@ -24,6 +24,11 @@ Create a file named `cfg.ini` in the root directory (you can use `cfg.example.in
 broker = 192.168.1.100          # MQTT Broker IP
 port = 1883
 topic_base = gardena/automower  # Base topic (creates .../mower_1/status, etc.)
+# Optional broker authentication & TLS:
+# username = gardena_user
+# password = enc:gAAAAAB...     # Encrypted with: python secrets_crypto.py
+# tls = false
+# ca_certs = /etc/ssl/certs/ca-certificates.crt
 
 [system]
 log_level = INFO                # DEBUG, INFO, WARNING, ERROR
@@ -35,13 +40,22 @@ poll_error = 30                 # Timeout after a Bluetooth error (seconds)
 [mower_1]
 name = Minimo Front
 address = 84:72:93:94:B6:4C     # Your mower's Bluetooth MAC address
-pin = 1234                      # Your Gardena PIN
+pin = enc:gAAAAAB...            # Encrypted PIN (or plaintext for backwards compatibility)
 
 [mower_2]
 name = Minimo Back
 address = 11:22:33:44:55:66
-pin = 5678
+pin = enc:gAAAAAB...
 ```
+
+### 🔐 Encrypting PINs and MQTT Passwords
+To avoid storing mower PINs or MQTT passwords in plaintext inside `cfg.ini`, run the helper script:
+```bash
+python secrets_crypto.py
+```
+1. It prompts for your PIN or password (hidden input) and prints an encrypted `enc:...` token to paste into `cfg.ini`.
+2. On first run, it generates a key file `.gardena.key` (permissions `0600`, excluded via `.gitignore` and `.dockerignore`). You can also pass the key via the `GARDENA_SECRET_KEY` environment variable.
+3. Existing plaintext values in `cfg.ini` continue to work (with a log warning).
 ## 🐳 Installation (Docker - Recommended)
 Since the container needs access to the host's Bluetooth hardware, you must mount the dbus and run it in privileged/host-network mode.
 ```bash
